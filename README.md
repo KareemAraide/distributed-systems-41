@@ -270,3 +270,9 @@ For these cross-origin tools, start n1 with `make run CORS='*'` and select
 See [SECURITY.md](SECURITY.md) for the security scope and vulnerability-reporting
 instructions. Generated files, local secrets, and submission artifacts are
 excluded from version control by `.gitignore`.
+
+Dependabot checks the Go dependencies every Monday at 10:00 in the
+Asia/Jerusalem timezone. The configuration in
+[`.github/dependabot.yml`](.github/dependabot.yml) includes indirect dependencies
+and groups minor and patch updates into one pull request. Major updates use
+separate pull requests. Review changes and run `make check` before merging.
