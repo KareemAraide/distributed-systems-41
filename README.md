@@ -280,7 +280,7 @@ The generated Go packages are checked in because Dependabot needs them to
 resolve local imports. `make build` still regenerates them from OpenAPI and
 protobuf. Include any regenerated changes when updating the dependencies.
 
-The YAML API migrations in jsonpath 0.7.x, openapi 1.25.x, and the newer go-yit
+The YAML API migrations in jsonpath 0.7 and later, openapi 1.25 and later, and the newer go-yit
 commit are temporarily excluded from Dependabot updates because they do not
 compile with oapi-codegen 2.8.2. Review these exclusions when upgrading to a
 compatible generator.
