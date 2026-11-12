@@ -11,6 +11,8 @@ updates:
     allow:
       - dependency-type: "all"
     open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
     groups:
       go-dependencies:
         patterns:
