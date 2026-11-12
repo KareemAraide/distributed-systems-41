@@ -1,0 +1,220 @@
+// STEPS 3-4 — The internal gRPC service (compile with `make gen-proto`).
+//
+//   * every RPC has its OWN request and response message
+//   * streams carry a variable number of items
+//   * errors are gRPC status codes, not fields in the messages
+//   * RPCs need not map 1:1 to REST operations
+syntax = "proto3";
+
+package game.v1;
+
+option go_package = "github.com/KareemAraide/distributed-systems-41/gen/game/v1;gamev1";
+
+service GameService {
+  rpc CreateGame(CreateGameRequest) returns (CreateGameResponse);
+  rpc GetGame(GetGameRequest) returns (GetGameResponse);
+  rpc JoinGame(JoinGameRequest) returns (JoinGameResponse);
+  rpc StartDeal(StartDealRequest) returns (StartDealResponse);
+  rpc CutDeck(CutDeckRequest) returns (CutDeckResponse);
+  rpc PlaceBid(PlaceBidRequest) returns (PlaceBidResponse);
+  rpc PlayCard(PlayCardRequest) returns (PlayCardResponse);
+
+  // Send HandInfo first, then one card per message. An empty hand still has HandInfo.
+  rpc GetHand(GetHandRequest) returns (stream GetHandResponse);
+}
+
+enum Consistency {
+  CONSISTENCY_UNSPECIFIED = 0; // treated as SEQUENTIAL
+  CONSISTENCY_SEQUENTIAL = 1;
+  CONSISTENCY_LINEARIZABLE = 2;
+}
+
+enum GamePhase {
+  GAME_PHASE_UNSPECIFIED = 0;
+  GAME_PHASE_WAITING = 1;
+  GAME_PHASE_READY = 2;
+  GAME_PHASE_CUTTING = 3;
+  GAME_PHASE_BIDDING = 4;
+  GAME_PHASE_PLAYING = 5;
+  GAME_PHASE_FINISHED = 6;
+}
+
+enum DealStatus {
+  DEAL_STATUS_UNSPECIFIED = 0;
+  DEAL_STATUS_CUTTING = 1;
+  DEAL_STATUS_BIDDING = 2;
+  DEAL_STATUS_PLAYING = 3;
+  DEAL_STATUS_SKIPPED = 4;
+  DEAL_STATUS_COMPLETED = 5;
+}
+
+// Public state. Hands and the shuffled deck are returned separately or kept on the server.
+message Game {
+  string id = 1;
+  GamePhase phase = 2;
+  int32 dealer_seat = 3; // seats 0-3 increase to the right
+  repeated Player players = 4; // in seat order; at most four
+  bool draw = 5;
+  Deal current_deal = 6; // absent before the first deal
+  optional int32 winner_team = 7; // team 0 or 1; present only when finished
+}
+
+message Player {
+  string id = 1;
+  string name = 2;
+  int32 seat = 3;
+  int32 team = 4; // seat modulo 2
+  int64 score = 5; // negative scores are allowed
+  int32 minimum_bid = 6; // the score bands are defined in openapi.yaml
+}
+
+message Deal {
+  int64 number = 1;
+  DealStatus status = 2;
+  int32 dealer_seat = 3;
+  optional int32 next_seat = 4; // absent after a skipped or completed deal
+  optional int32 cut_position = 5; // present after cutting
+  repeated Bid bids = 6; // submission order, starting with the dealer
+  repeated DealPlayerState player_states = 7; // four entries, in seat order
+  int32 completed_tricks = 8;
+  Trick current_trick = 9; // present only while playing; zero to three plays
+  Trick last_trick = 10; // the latest resolved trick, including its winner
+}
+
+message DealPlayerState {
+  string player_id = 1;
+  int32 cards_remaining = 2;
+  int32 tricks_won = 3;
+}
+
+message Bid {
+  string player_id = 1;
+  int32 amount = 2; // 2-13, except 6; must meet the player's current minimum
+  int32 points = 3; // amount for 2-5, twice the amount for 7-13
+}
+
+message Trick {
+  int32 number = 1;
+  int32 leader_seat = 2;
+  repeated CardPlay plays = 3; // in turn order; at most four
+  optional int32 winner_seat = 4; // present only after four plays
+}
+
+message CardPlay {
+  string player_id = 1;
+  string card = 2; // rank followed by suit, e.g. 10H or AS
+}
+
+// ---- Create game -------------------------------------------------------
+// Seats the creator at 0 and assigns the game and player IDs.
+message CreateGameRequest {
+  string name = 1;
+}
+
+message CreateGameResponse {
+  Game game = 1;
+  string node_id = 2;
+}
+
+// ---- Read game ---------------------------------------------------------
+// Return one public game snapshot at the requested consistency.
+message GetGameRequest {
+  string game_id = 1;
+  Consistency consistency = 2;
+}
+
+message GetGameResponse {
+  Game game = 1;
+  string node_id = 2;
+}
+
+// ---- Join game ---------------------------------------------------------
+// ALREADY_EXISTS for an occupied seat; FAILED_PRECONDITION after the first deal starts.
+message JoinGameRequest {
+  string game_id = 1;
+  string name = 2;
+  int32 seat = 3;
+}
+
+message JoinGameResponse {
+  Game game = 1;
+  string node_id = 2;
+}
+
+// ---- Start deal --------------------------------------------------------
+// The actor must be the dealer and the game must be ready.
+// The server chooses the shuffled order; clients cannot supply it.
+message StartDealRequest {
+  string game_id = 1;
+  string player_id = 2;
+}
+
+message StartDealResponse {
+  Game game = 1;
+  string node_id = 2;
+}
+
+// ---- Cut deck ----------------------------------------------------------
+// The actor must sit left of the dealer. Cut and deal all 52 cards atomically.
+message CutDeckRequest {
+  string game_id = 1;
+  int64 deal_number = 2;
+  string player_id = 3;
+  int32 cut_position = 4; // 1-52 cards, counting from the top
+}
+
+message CutDeckResponse {
+  Game game = 1;
+  string node_id = 2;
+}
+
+// ---- Place bid ---------------------------------------------------------
+// Check the turn and minimum, record the bid, and resolve bidding on the fourth bid.
+message PlaceBidRequest {
+  string game_id = 1;
+  int64 deal_number = 2;
+  string player_id = 3;
+  int32 amount = 4;
+}
+
+message PlaceBidResponse {
+  Game game = 1;
+  string node_id = 2;
+}
+
+// ---- Play card ---------------------------------------------------------
+// Validate and apply one play atomically, including any trick or deal resolution.
+message PlayCardRequest {
+  string game_id = 1;
+  int64 deal_number = 2;
+  string player_id = 3;
+  string card = 4;
+}
+
+message PlayCardResponse {
+  Game game = 1;
+  string node_id = 2;
+}
+
+// ---- Read hand ---------------------------------------------------------
+// Stream cards in suit order C, D, S, H, then by increasing rank.
+// NOT_FOUND and FAILED_PRECONDITION are returned as gRPC status errors.
+message GetHandRequest {
+  string game_id = 1;
+  string player_id = 2;
+  Consistency consistency = 3;
+}
+
+message GetHandResponse {
+  oneof item {
+    HandInfo info = 1;
+    string card = 2;
+  }
+}
+
+message HandInfo {
+  string game_id = 1;
+  int64 deal_number = 2;
+  string player_id = 3;
+  string node_id = 4;
+}

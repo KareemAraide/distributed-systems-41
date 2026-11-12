@@ -1,0 +1,30 @@
+# Go build output and generated code
+/bin/
+# Generated code: commit it if you prefer, but always regenerate after editing the spec/.proto
+/gen/
+*.test
+/coverage.out
+/coverage.html
+
+# Reports and submission metadata
+/report/
+/submission/
+/dist/
+/students.json
+/repo.url
+*.zip
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+
+# Editor and operating-system files
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+__MACOSX/

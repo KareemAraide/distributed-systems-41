@@ -1,0 +1,90 @@
+// STEPS 3-4 — The internal gRPC service (compile with `make gen-proto`).
+//
+// This is the running EXAMPLE (a key-value store); replace it with your own
+// service. Rules shown here:
+//   * every RPC has its OWN request and response message
+//   * streams carry a variable number of items (keys, entries)
+//   * errors are gRPC status codes, not fields in the messages
+//   * RPCs need not map 1:1 to REST operations (8 REST operations, 3 RPCs)
+syntax = "proto3";
+package kvs.v1;
+option go_package = "github.com/your-team/kvs/gen/kvs/v1;kvsv1";
+
+service KVStore {
+  // One key, a list, a prefix or a range; results stream back sorted.
+  // NOT_FOUND only when a single key was asked for and it is missing.
+  rpc Read(ReadRequest) returns (stream ReadResponse);
+  // One UpdateRequest per key; all are applied atomically when the client
+  // closes the stream. FAILED_PRECONDITION if any if_version differs.
+  rpc Update(stream UpdateRequest) returns (UpdateResponse);
+  // One DeleteRequest per key; applied atomically on close.
+  rpc Delete(stream DeleteRequest) returns (DeleteResponse);
+  // Not in Part I:
+  // rpc Watch(WatchRequest) returns (stream WatchResponse);
+}
+
+enum Consistency {
+  CONSISTENCY_UNSPECIFIED = 0;  // treated as SEQUENTIAL
+  CONSISTENCY_SEQUENTIAL = 1;
+  CONSISTENCY_LINEARIZABLE = 2;
+}
+
+message Entry {
+  string key = 1;
+  string value = 2;
+  int64 version = 3;            // incremented on every write of this key
+}
+
+// ---- Read --------------------------------------------------------------
+message ReadRequest {
+  oneof select {
+    string key = 1;             // exactly one key
+    KeyList keys = 2;           // several keys (missing ones are skipped)
+    string prefix = 3;          // all keys with this prefix
+    KeyRange range = 4;         // all keys in [from, to)
+  }
+  SortOrder sort = 5;
+  int32 limit = 6;              // 0 = no limit
+  bool keys_only = 7;           // entries carry only the key
+  Consistency consistency = 8;
+}
+message KeyList  { repeated string keys = 1; }
+message KeyRange { string from = 1; string to = 2; }  // empty = unbounded
+message SortOrder {
+  enum Field { FIELD_KEY = 0; FIELD_VALUE = 1; FIELD_VERSION = 2; }
+  Field field = 1;
+  bool descending = 2;          // ties are always broken by key, ascending
+}
+message ReadResponse {
+  Entry entry = 1;              // one message per entry, in sort order
+}
+
+// ---- Update ------------------------------------------------------------
+message UpdateRequest {
+  string key = 1;
+  oneof op {
+    string set = 2;             // create or replace the value
+    string append = 3;          // append to the value ("" if missing)
+    int64 increment = 4;        // add to an integer value (0 if missing)
+  }
+  optional int64 if_version = 5; // CAS; 0 = key must not exist
+}
+message UpdateResponse {
+  repeated Entry entries = 1;   // entries after the update, request order
+  repeated bool created = 2;    // per entry: did the key exist before?
+}
+
+// ---- Delete ------------------------------------------------------------
+message DeleteRequest {
+  string key = 1;
+  optional int64 if_version = 2;
+}
+message DeleteResponse {
+  int32 deleted = 1;            // keys that existed (missing: no error)
+}
+
+// ---- Watch (not in Part I) ---------------------------------------------
+// message WatchRequest  { string prefix = 1; optional int64 since = 2; }
+// message WatchResponse {
+//   int64 revision = 1; Entry entry = 2; bool deleted = 3;
+// }
