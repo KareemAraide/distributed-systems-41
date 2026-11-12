@@ -1,7 +1,7 @@
-# Go build output and generated code
+# Go build output
 /bin/
 # Generated code: commit it if you prefer, but always regenerate after editing the spec/.proto
-/gen/
+# Generated Go packages are checked in so Dependabot can resolve their imports.
 *.test
 /coverage.out
 /coverage.html
