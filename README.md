@@ -218,6 +218,13 @@ The HTTP tests call a gRPC backend and validate responses against
 request errors, optional zero values, negative scores, malformed streams, errors
 after streaming has begun, and deadlines.
 
+To check dependencies against the Go vulnerability database:
+
+```sh
+go install golang.org/x/vuln/cmd/govulncheck@latest
+govulncheck -test ./...
+```
+
 ## Inspect gRPC directly
 
 Install grpcurl once:
