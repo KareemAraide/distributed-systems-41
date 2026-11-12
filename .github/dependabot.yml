@@ -20,3 +20,11 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # oapi-codegen 2.8.2 needs the older YAML Node API.
+    ignore:
+      - dependency-name: "github.com/speakeasy-api/jsonpath"
+        versions: [">=0.7.0, <0.8.0"]
+      - dependency-name: "github.com/speakeasy-api/openapi"
+        versions: [">=1.25.0, <1.26.0"]
+      - dependency-name: "github.com/dprotaso/go-yit"
+        versions: ["0.0.0-20250804204205-7afe4252a1dd"]
