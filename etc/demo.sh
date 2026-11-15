@@ -17,6 +17,7 @@ request() {
 
 # Each operation uses an independent dummy response in Part I.
 request POST /v1/games -H "$J" -d '{"name":"Kareem"}'
+request GET '/v1/games?ids=game-b&ids=game-a'
 request GET '/v1/games/demo?consistency=sequential'
 request GET '/v1/games/demo?consistency=linearizable'
 request POST /v1/games/demo/players -H "$J" -d '{"name":"Player Two","seat":1}'
@@ -30,5 +31,7 @@ request GET /v1/games/empty-hand/players/player-0/hand
 # Fixed inputs demonstrate 400, 404, 409, and 412 responses.
 request POST /v1/games/demo/deals/1/bids -H "$J" -d '{"playerId":"player-0","amount":6}'
 request GET /v1/games/missing
+request GET '/v1/games?ids=demo&ids=missing'
+request GET '/v1/games?ids=demo&ids=demo'
 request POST /v1/games/demo/players -H "$J" -d '{"name":"Player Two","seat":0}'
 request POST /v1/games/blocked/deals -H "$J" -d '{"playerId":"player-0"}'

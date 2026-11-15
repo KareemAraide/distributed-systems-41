@@ -119,10 +119,73 @@ func TestReadConsistencyModes(t *testing.T) {
 		if _, err := client.GetGame(ctx, &gamev1.GetGameRequest{GameId: "demo", Consistency: mode}); err != nil {
 			t.Fatal(err)
 		}
+		stream, err := client.GetGames(ctx, &gamev1.GetGamesRequest{GameIds: []string{"demo"}, Consistency: mode})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Recv(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Recv(); err != io.EOF {
+			t.Fatalf("expected end of batch: %v", err)
+		}
 	}
 	_, err := client.GetGame(ctx, &gamev1.GetGameRequest{GameId: "demo", Consistency: gamev1.Consistency(99)})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("unknown consistency: got %v", err)
+	}
+}
+
+func TestBatchGameStream(t *testing.T) {
+	client := testClient(t, "batch-node")
+	ctx := testContext(t)
+	ids := []string{"high-score", "game-b", "empty-hand", "blocked"}
+	stream, err := client.GetGames(ctx, &gamev1.GetGamesRequest{GameIds: ids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		reply, err := stream.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		single, err := client.GetGame(ctx, &gamev1.GetGameRequest{GameId: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reply.GetNodeId() != "batch-node" || reply.GetGame().GetId() != id || !proto.Equal(reply.GetGame(), single.GetGame()) {
+			t.Fatalf("batch snapshot differs from its single read: %v", reply)
+		}
+	}
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("expected one snapshot per ID: %v", err)
+	}
+}
+
+func TestBatchValidationBeforeResults(t *testing.T) {
+	client := testClient(t, "batch-node")
+	ctx := testContext(t)
+	for _, tc := range []struct {
+		name string
+		req  *gamev1.GetGamesRequest
+		code codes.Code
+	}{
+		{"no IDs", &gamev1.GetGamesRequest{}, codes.InvalidArgument},
+		{"empty ID", &gamev1.GetGamesRequest{GameIds: []string{"demo", ""}}, codes.InvalidArgument},
+		{"duplicate ID", &gamev1.GetGamesRequest{GameIds: []string{"demo", "demo"}}, codes.InvalidArgument},
+		{"missing first", &gamev1.GetGamesRequest{GameIds: []string{"missing", "demo"}}, codes.NotFound},
+		{"missing later", &gamev1.GetGamesRequest{GameIds: []string{"demo", "missing"}}, codes.NotFound},
+		{"unknown consistency", &gamev1.GetGamesRequest{GameIds: []string{"demo"}, Consistency: gamev1.Consistency(99)}, codes.InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, err := client.GetGames(ctx, tc.req)
+			if err == nil {
+				_, err = stream.Recv()
+			}
+			if status.Code(err) != tc.code {
+				t.Fatalf("expected %s before any results, got %v", tc.code, err)
+			}
+		})
 	}
 }
 

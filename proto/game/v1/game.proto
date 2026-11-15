@@ -13,6 +13,7 @@ option go_package = "github.com/KareemAraide/distributed-systems-41/gen/game/v1;
 service GameService {
   rpc CreateGame(CreateGameRequest) returns (CreateGameResponse);
   rpc GetGame(GetGameRequest) returns (GetGameResponse);
+  rpc GetGames(GetGamesRequest) returns (stream GetGamesResponse);
   rpc JoinGame(JoinGameRequest) returns (JoinGameResponse);
   rpc StartDeal(StartDealRequest) returns (StartDealResponse);
   rpc CutDeck(CutDeckRequest) returns (CutDeckResponse);
@@ -124,6 +125,18 @@ message GetGameRequest {
 }
 
 message GetGameResponse {
+  Game game = 1;
+  string node_id = 2;
+}
+
+// ---- Batch read --------------------------------------------------------
+// IDs must be nonempty and distinct. Send one snapshot per ID in request order.
+message GetGamesRequest {
+  repeated string game_ids = 1;
+  Consistency consistency = 2;
+}
+
+message GetGamesResponse {
   Game game = 1;
   string node_id = 2;
 }

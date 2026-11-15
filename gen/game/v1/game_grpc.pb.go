@@ -28,6 +28,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	GameService_CreateGame_FullMethodName = "/game.v1.GameService/CreateGame"
 	GameService_GetGame_FullMethodName    = "/game.v1.GameService/GetGame"
+	GameService_GetGames_FullMethodName   = "/game.v1.GameService/GetGames"
 	GameService_JoinGame_FullMethodName   = "/game.v1.GameService/JoinGame"
 	GameService_StartDeal_FullMethodName  = "/game.v1.GameService/StartDeal"
 	GameService_CutDeck_FullMethodName    = "/game.v1.GameService/CutDeck"
@@ -42,6 +43,7 @@ const (
 type GameServiceClient interface {
 	CreateGame(ctx context.Context, in *CreateGameRequest, opts ...grpc.CallOption) (*CreateGameResponse, error)
 	GetGame(ctx context.Context, in *GetGameRequest, opts ...grpc.CallOption) (*GetGameResponse, error)
+	GetGames(ctx context.Context, in *GetGamesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetGamesResponse], error)
 	JoinGame(ctx context.Context, in *JoinGameRequest, opts ...grpc.CallOption) (*JoinGameResponse, error)
 	StartDeal(ctx context.Context, in *StartDealRequest, opts ...grpc.CallOption) (*StartDealResponse, error)
 	CutDeck(ctx context.Context, in *CutDeckRequest, opts ...grpc.CallOption) (*CutDeckResponse, error)
@@ -78,6 +80,25 @@ func (c *gameServiceClient) GetGame(ctx context.Context, in *GetGameRequest, opt
 	}
 	return out, nil
 }
+
+func (c *gameServiceClient) GetGames(ctx context.Context, in *GetGamesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetGamesResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &GameService_ServiceDesc.Streams[0], GameService_GetGames_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GetGamesRequest, GetGamesResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type GameService_GetGamesClient = grpc.ServerStreamingClient[GetGamesResponse]
 
 func (c *gameServiceClient) JoinGame(ctx context.Context, in *JoinGameRequest, opts ...grpc.CallOption) (*JoinGameResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -131,7 +152,7 @@ func (c *gameServiceClient) PlayCard(ctx context.Context, in *PlayCardRequest, o
 
 func (c *gameServiceClient) GetHand(ctx context.Context, in *GetHandRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetHandResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &GameService_ServiceDesc.Streams[0], GameService_GetHand_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &GameService_ServiceDesc.Streams[1], GameService_GetHand_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +175,7 @@ type GameService_GetHandClient = grpc.ServerStreamingClient[GetHandResponse]
 type GameServiceServer interface {
 	CreateGame(context.Context, *CreateGameRequest) (*CreateGameResponse, error)
 	GetGame(context.Context, *GetGameRequest) (*GetGameResponse, error)
+	GetGames(*GetGamesRequest, grpc.ServerStreamingServer[GetGamesResponse]) error
 	JoinGame(context.Context, *JoinGameRequest) (*JoinGameResponse, error)
 	StartDeal(context.Context, *StartDealRequest) (*StartDealResponse, error)
 	CutDeck(context.Context, *CutDeckRequest) (*CutDeckResponse, error)
@@ -176,6 +198,9 @@ func (UnimplementedGameServiceServer) CreateGame(context.Context, *CreateGameReq
 }
 func (UnimplementedGameServiceServer) GetGame(context.Context, *GetGameRequest) (*GetGameResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetGame not implemented")
+}
+func (UnimplementedGameServiceServer) GetGames(*GetGamesRequest, grpc.ServerStreamingServer[GetGamesResponse]) error {
+	return status.Error(codes.Unimplemented, "method GetGames not implemented")
 }
 func (UnimplementedGameServiceServer) JoinGame(context.Context, *JoinGameRequest) (*JoinGameResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method JoinGame not implemented")
@@ -251,6 +276,17 @@ func _GameService_GetGame_Handler(srv interface{}, ctx context.Context, dec func
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _GameService_GetGames_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(GetGamesRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(GameServiceServer).GetGames(m, &grpc.GenericServerStream[GetGamesRequest, GetGamesResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type GameService_GetGamesServer = grpc.ServerStreamingServer[GetGamesResponse]
 
 func _GameService_JoinGame_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(JoinGameRequest)
@@ -390,6 +426,11 @@ var GameService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "GetGames",
+			Handler:       _GameService_GetGames_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "GetHand",
 			Handler:       _GameService_GetHand_Handler,

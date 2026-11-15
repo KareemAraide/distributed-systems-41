@@ -88,14 +88,18 @@ info:
     For every new deal the dealer moves right. Scores are checked only
     after all four score updates, never partway through scoring.
 
-    **Consistency and atomicity.** Every GET accepts
-    consistency=sequential|linearizable, defaulting to sequential.
-    Every POST is linearizable. Every failed write leaves state unchanged.
+    **Read, write, and batch operations.** getGame and getHand read one
+    resource, the POST operations change state, and getGames reads several
+    selected games in one request. The batch preserves the requested order
+    and fails as a whole if any selected game does not exist.
+    The optional consistency=sequential|linearizable parameter is retained
+    for reads, defaulting to sequential. Following the course clarification,
+    consistency conditions are not a Part I requirement and are not enforced
+    by the dummy service. Every failed write leaves state unchanged.
     A card play atomically validates the turn, ownership and following-suit
     rule, removes the card, and advances or resolves the trick. The last play
     of a deal also updates all scores and the game outcome atomically.
-    These are the service's read-modify-write semantics. Consistency is
-    declared in Part I and enforced from Part III.
+    These are the service's read-modify-write semantics.
 
     **Responses.** Public game snapshots never contain hands or the shuffled
     deck. A hand is retrieved separately by game ID and player ID.
@@ -120,12 +124,39 @@ tags:
 
 paths:
   /v1/games:
+    get:
+      tags: [games]
+      operationId: getGames
+      summary: Read several games in one batch
+      description: |
+        Read the public snapshots of the selected games in one request.
+        Supply ids repeatedly, for example ?ids=game-a&ids=game-b.
+        At least one nonempty ID is required, and duplicate IDs return 400.
+        Results follow the request order and contain no player hands or deck.
+        If any game does not exist, return 404 for the entire request.
+        The HTTP layer waits for the whole gRPC stream before returning 200,
+        so a late backend failure never produces a partial success response.
+      parameters:
+        - $ref: '#/components/parameters/GameIds'
+        - $ref: '#/components/parameters/Consistency'
+      responses:
+        '200':
+          description: All requested public game snapshots and the responding node ID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GamesResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+        '504': { $ref: '#/components/responses/GatewayTimeout' }
     post:
       tags: [games]
       operationId: createGame
       summary: Create a game and seat its creator
       description: |
-        Linearizable write. The server assigns game and player IDs, seats the
+        Write. The server assigns game and player IDs, seats the
         named creator at seat 0, and initializes all scores to 0. The phase is
         waiting, dealerSeat is 0, and draw is false. The creator finds their
         player ID in the returned players entry for seat 0.
@@ -182,7 +213,7 @@ paths:
       operationId: joinGame
       summary: Join an empty seat before the first deal
       description: |
-        Linearizable read-modify-write. Atomically reserve the selected empty
+        Read-modify-write. Atomically reserve the selected empty
         seat and assign a player ID, team and initial score of 0. Return 409
         when the seat is occupied. Return 412 once the first deal has started.
         The fourth player's arrival changes the phase from waiting to ready.
@@ -215,7 +246,7 @@ paths:
       operationId: startDeal
       summary: Start a deal with a server-generated random shuffle
       description: |
-        Linearizable read-modify-write. Requires phase ready, four players,
+        Read-modify-write. Requires phase ready, four players,
         and playerId belonging to the current dealer; otherwise return 412.
         Create the next deal number, starting at 1, shuffle once on the
         server, and enter phase cutting. Deal numbers also count skipped
@@ -249,7 +280,7 @@ paths:
       operationId: cutDeck
       summary: Cut the shuffled deck and distribute the cards
       description: |
-        Linearizable read-modify-write. Requires the current deal, phase
+        Read-modify-write. Requires the current deal, phase
         cutting, and the player immediately to the dealer's left; otherwise
         return 412. Move the first cutPosition cards to the bottom without
         changing their relative order. Position 1 means the top card;
@@ -285,7 +316,7 @@ paths:
       operationId: placeBid
       summary: Submit the next player's fixed bid
       description: |
-        Linearizable read-modify-write. Requires the current deal, phase
+        Read-modify-write. Requires the current deal, phase
         bidding, the next player, no previous bid by that player, and the
         score-dependent minimum; otherwise return 412. Values outside the
         allowed bid enumeration, including 6, return 400.
@@ -322,7 +353,7 @@ paths:
       operationId: playCard
       summary: Play one card and atomically advance the game
       description: |
-        Linearizable read-modify-write. Requires the current deal, phase
+        Read-modify-write. Requires the current deal, phase
         playing, the next player, a card in that player's hand, and following
         the leading suit when possible. A violated state precondition returns
         412 without changing anything. An invalid card encoding returns 400.
@@ -387,6 +418,18 @@ paths:
 
 components:
   parameters:
+    GameIds:
+      name: ids
+      in: query
+      required: true
+      description: Nonempty, distinct game IDs, repeated in the desired result order
+      style: form
+      explode: true
+      schema:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: { type: string, minLength: 1 }
     GameId:
       name: gameId
       in: path
@@ -409,7 +452,7 @@ components:
       name: consistency
       in: query
       required: false
-      description: Required read consistency, enforced from Part III
+      description: Optional read consistency; Part I forwards it without enforcing guarantees
       schema: { $ref: '#/components/schemas/Consistency' }
 
   responses:
@@ -559,6 +602,20 @@ components:
           description: Acting participant; must be next to play
           example: player-0
         card: { $ref: '#/components/schemas/Card' }
+
+    GamesResponse:
+      type: object
+      required: [games, nodeId]
+      properties:
+        games:
+          type: array
+          minItems: 1
+          description: Public game snapshots in the same order as the requested IDs
+          items: { $ref: '#/components/schemas/Game' }
+        nodeId:
+          type: string
+          description: Identity of the gRPC node that produced every snapshot in this batch
+          example: n1
 
     GameResponse:
       type: object

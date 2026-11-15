@@ -13,6 +13,10 @@ does not change a later read. The responding gRPC node identifies itself through
 `nodeId`. Part II adds the local game state; Part III adds replicated ordering
 and enforces the declared consistency guarantees.
 
+Following the course clarification, Part I includes a read, a write, and an
+explicit batch operation. `GetGames` is the batch read; consistency options
+remain optional and are not enforced by the Part I dummy service.
+
 ## Game semantics
 
 - Four seats, numbered 0-3 in turn order to the right. Seats 0 and 2 form team 0;
@@ -114,6 +118,7 @@ follow the RPC name, such as `CreateGameRequest` and `CreateGameResponse`.
 |---|---|---|---|
 | POST | `/v1/games` | `CreateGame` | 201, game snapshot and node ID |
 | GET | `/v1/games/{gameId}` | `GetGame` | 200, public snapshot and node ID |
+| GET | `/v1/games?ids=game-a&ids=game-b` | `GetGames` (server stream) | 200, ordered game snapshots and node ID |
 | POST | `/v1/games/{gameId}/players` | `JoinGame` | 201, updated snapshot and node ID |
 | POST | `/v1/games/{gameId}/deals` | `StartDeal` | 201, snapshot awaiting a cut |
 | POST | `/v1/games/{gameId}/deals/{dealNumber}/cuts` | `CutDeck` | 201, snapshot ready for bidding |
@@ -124,6 +129,14 @@ follow the RPC name, such as `CreateGameRequest` and `CreateGameResponse`.
 The complete parameters, bodies, schemas and response codes are in
 [`api/openapi.yaml`](api/openapi.yaml). Cards use rank followed by suit, such
 as `10H` or `AS`.
+
+The batch read requires at least one nonempty game ID. Repeat the `ids` query
+parameter for each game; duplicate IDs return 400. `GetGames` sends one snapshot
+per requested ID, in request order. REST returns `{"games":[...],"nodeId":"n1"}`.
+If any game is missing, the entire request returns 404. The handler collects the
+complete stream before sending HTTP 200, so a late RPC error remains a problem
+response rather than a partial success. The result count, IDs, and node identity
+are checked before returning the batch.
 
 `GetHand` first sends a `HandInfo` message, followed by zero to thirteen card
 messages. Cards arrive in suit order C, D, S, H and increasing rank. The HTTP
@@ -140,17 +153,24 @@ The gRPC client disables DNS-provided service configuration because its target
 is explicit. This avoids stalled `_grpc_config.localhost` TXT lookups in WSL;
 normal hostname address resolution remains enabled.
 
-## Consistency
+## Operation categories and optional consistency
 
-Both reads accept `?consistency=sequential|linearizable`, defaulting to sequential.
+| Category | Example |
+|---|---|
+| Read | `GetGame`, `GetHand` |
+| Write | `CreateGame`, `PlaceBid`, `PlayCard` |
+| Batch | `GetGames`, reading selected games in one call |
+
+All three reads accept `?consistency=sequential|linearizable`, defaulting to sequential.
 The HTTP layer passes the corresponding protobuf enum to gRPC. An unspecified
 protobuf value also means sequential. Invalid consistency query values return 400.
 
-Every write is specified as linearizable. Playing a card is a read-modify-write
+The clarification removes consistency conditions as a Part I requirement; these
+options are retained for compatibility. No consistency guarantee is enforced by
+the dummy implementation. Playing a card is a read-modify-write
 operation: its turn/ownership/following-suit checks and updates form one atomic
 transition, including trick resolution or end-of-deal scoring when applicable.
-These are the service semantics; the guarantees are enforced from Part III.
-Part I uses stateless dummy responses.
+These are the intended game semantics; Part I uses stateless dummy responses.
 
 ## Errors
 
@@ -178,6 +198,8 @@ Fixed inputs make the Part I examples repeatable:
 |---|---|
 | Normal game ID, such as `demo` | Fresh dummy snapshot |
 | `gameId: "missing"` or an unknown player | 404 |
+| Missing/empty batch IDs or duplicate IDs | 400 |
+| A batch containing `missing` | 404 for the whole request |
 | Join seat 0 | 409, creator already occupies it |
 | `gameId: "blocked"` for an action or hand read | 412 |
 | Actor other than `player-0` for start/bid/play, or `player-3` for cutting | 412 |

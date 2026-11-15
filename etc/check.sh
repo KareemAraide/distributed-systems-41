@@ -119,6 +119,10 @@ for B in http://localhost:18080 http://localhost:18081; do
   body_contains "optional seat 0" '"nextSeat":0'
   expect 200 GET "/v1/games/demo?consistency=sequential"
   expect 200 GET "/v1/games/demo?consistency=linearizable"
+  expect 200 GET "/v1/games?ids=game-b&ids=game-a"
+  body_contains "first batch game" '"id":"game-b"'
+  body_contains "second batch game" '"id":"game-a"'
+  expect 200 GET "/v1/games?ids=demo&ids=high-score&consistency=linearizable"
   expect 201 POST "/v1/games/demo/players" -H "$J" -d '{"name":"Player Two","seat":1}'
   expect 201 POST "/v1/games/demo/deals" -H "$J" -d '{"playerId":"player-0"}'
   expect 201 POST "/v1/games/demo/deals/1/cuts" -H "$J" -d '{"playerId":"player-3","cutPosition":20}'
@@ -140,6 +144,12 @@ for B in http://localhost:18080 http://localhost:18081; do
   expect 400 GET "/v1/games/demo?consistency=other"
   expect 400 GET "/v1/games/demo/players/player-0/hand?consistency=other"
   expect 404 GET "/v1/games/missing"
+  expect 400 GET "/v1/games"
+  expect 400 GET "/v1/games?ids="
+  expect 400 GET "/v1/games?ids=demo&ids="
+  expect 400 GET "/v1/games?ids=demo&ids=demo"
+  expect 400 GET "/v1/games?ids=demo&consistency=other"
+  expect 404 GET "/v1/games?ids=demo&ids=missing"
   expect 404 GET "/v1/games/demo/players/missing/hand"
   expect 409 POST "/v1/games/demo/players" -H "$J" -d '{"name":"Player Two","seat":0}'
   expect 412 POST "/v1/games/blocked/deals" -H "$J" -d '{"playerId":"player-0"}'
@@ -160,6 +170,7 @@ wait "$P1" || true
 P1=
 B=http://localhost:18081
 expect 503 GET "/v1/games/demo"
+expect 503 GET "/v1/games?ids=game-a&ids=game-b"
 
 if [ "$FAIL" -ne 0 ]; then
   printf '\nSOME CHECKS FAILED\n'

@@ -60,6 +60,34 @@ func (s *Server) GetGame(ctx context.Context, req *gamev1.GetGameRequest) (*game
 	return &gamev1.GetGameResponse{Game: g, NodeId: s.NodeID}, nil
 }
 
+func (s *Server) GetGames(req *gamev1.GetGamesRequest, stream grpc.ServerStreamingServer[gamev1.GetGamesResponse]) error {
+	if len(req.GetGameIds()) == 0 {
+		return status.Error(codes.InvalidArgument, "at least one game ID is required")
+	}
+	seen := make(map[string]bool, len(req.GetGameIds()))
+	for _, id := range req.GetGameIds() {
+		if id == "" || seen[id] {
+			return status.Error(codes.InvalidArgument, "game IDs must be nonempty and distinct")
+		}
+		seen[id] = true
+	}
+	// Build the whole batch before sending any snapshots.
+	replies := make([]*gamev1.GetGamesResponse, 0, len(req.GetGameIds()))
+	for _, id := range req.GetGameIds() {
+		reply, err := s.GetGame(stream.Context(), &gamev1.GetGameRequest{GameId: id, Consistency: req.GetConsistency()})
+		if err != nil {
+			return err
+		}
+		replies = append(replies, &gamev1.GetGamesResponse{Game: reply.GetGame(), NodeId: reply.GetNodeId()})
+	}
+	for _, reply := range replies {
+		if err := stream.Send(reply); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) JoinGame(ctx context.Context, req *gamev1.JoinGameRequest) (*gamev1.JoinGameResponse, error) {
 	if err := checkGameAction(req.GetGameId()); err != nil {
 		return nil, err

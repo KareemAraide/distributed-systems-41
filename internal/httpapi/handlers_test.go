@@ -110,6 +110,15 @@ func TestRESTResponsesMatchOpenAPI(t *testing.T) {
 		{"read default", "GET", "/v1/games/demo", "", 200},
 		{"read sequential", "GET", "/v1/games/demo?consistency=sequential", "", 200},
 		{"read linearizable", "GET", "/v1/games/demo?consistency=linearizable", "", 200},
+		{"batch", "GET", "/v1/games?ids=game-b&ids=high-score", "", 200},
+		{"single batch", "GET", "/v1/games?ids=demo", "", 200},
+		{"batch without IDs", "GET", "/v1/games", "", 400},
+		{"batch empty ID", "GET", "/v1/games?ids=", "", 400},
+		{"batch empty later ID", "GET", "/v1/games?ids=demo&ids=", "", 400},
+		{"batch duplicates", "GET", "/v1/games?ids=demo&ids=demo", "", 400},
+		{"batch missing first", "GET", "/v1/games?ids=missing&ids=demo", "", 404},
+		{"batch missing later", "GET", "/v1/games?ids=demo&ids=missing", "", 404},
+		{"batch bad consistency", "GET", "/v1/games?ids=demo&consistency=other", "", 400},
 		{"join", "POST", "/v1/games/demo/players", `{"name":"Player Two","seat":1}`, 201},
 		{"start", "POST", "/v1/games/demo/deals", `{"playerId":"player-0"}`, 201},
 		{"cut", "POST", "/v1/games/demo/deals/1/cuts", `{"playerId":"player-3","cutPosition":20}`, 201},
@@ -142,6 +151,15 @@ func TestRESTResponsesMatchOpenAPI(t *testing.T) {
 			if tc.name == "read default" && !strings.Contains(response.Body.String(), `"nextSeat":0`) {
 				t.Fatalf("optional seat 0 was lost: %s", response.Body.String())
 			}
+			if tc.name == "batch" {
+				var out rest.GamesResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &out); err != nil {
+					t.Fatal(err)
+				}
+				if len(out.Games) != 2 || out.Games[0].Id != "game-b" || out.Games[1].Id != "high-score" || out.Games[1].Players[0].Score != 30 {
+					t.Fatalf("batch lost its order or game data: %s", response.Body.String())
+				}
+			}
 		})
 	}
 }
@@ -161,11 +179,16 @@ func (s *recordingService) GetHand(req *gamev1.GetHandRequest, stream grpc.Serve
 	return s.Server.GetHand(req, stream)
 }
 
+func (s *recordingService) GetGames(req *gamev1.GetGamesRequest, stream grpc.ServerStreamingServer[gamev1.GetGamesResponse]) error {
+	s.reads <- req.GetConsistency()
+	return s.Server.GetGames(req, stream)
+}
+
 func TestReadConsistencyReachesGRPC(t *testing.T) {
 	service := &recordingService{Server: grpcsvc.New("backend"), reads: make(chan gamev1.Consistency, 1)}
 	handler := testHTTPHandler(t, service)
 	router := testOpenAPIRouter(t)
-	for _, path := range []string{"/v1/games/demo", "/v1/games/demo/players/player-0/hand"} {
+	for _, path := range []string{"/v1/games/demo", "/v1/games/demo/players/player-0/hand", "/v1/games?ids=demo&ids=second"} {
 		for _, tc := range []struct {
 			query string
 			want  gamev1.Consistency
@@ -174,7 +197,11 @@ func TestReadConsistencyReachesGRPC(t *testing.T) {
 			{"?consistency=sequential", gamev1.Consistency_CONSISTENCY_SEQUENTIAL},
 			{"?consistency=linearizable", gamev1.Consistency_CONSISTENCY_LINEARIZABLE},
 		} {
-			checkREST(t, handler, router, "GET", path+tc.query, "", 200)
+			query := tc.query
+			if strings.Contains(path, "?") {
+				query = strings.Replace(query, "?", "&", 1)
+			}
+			checkREST(t, handler, router, "GET", path+query, "", 200)
 			select {
 			case got := <-service.reads:
 				if got != tc.want {
@@ -249,6 +276,68 @@ func (s *faultyService) GetHand(req *gamev1.GetHandRequest, stream grpc.ServerSt
 	return stream.Send(info)
 }
 
+func (s *faultyService) GetGames(req *gamev1.GetGamesRequest, stream grpc.ServerStreamingServer[gamev1.GetGamesResponse]) error {
+	ids := append([]string(nil), req.GetGameIds()...)
+	mode := ids[0]
+	switch mode {
+	case "internal", "unimplemented", "unavailable", "deadline", "wait":
+		_, err := s.GetGame(stream.Context(), &gamev1.GetGameRequest{GameId: mode})
+		return err
+	case "batch-empty-stream":
+		return nil
+	case "batch-short-stream":
+		ids = ids[:len(ids)-1]
+	case "batch-extra-stream":
+		ids = append(ids, "unexpected")
+	}
+	for index, id := range ids {
+		reply, err := s.Server.GetGame(stream.Context(), &gamev1.GetGameRequest{GameId: id})
+		if err != nil {
+			return err
+		}
+		out := &gamev1.GetGamesResponse{Game: reply.Game, NodeId: reply.NodeId}
+		switch mode {
+		case "batch-wrong-order":
+			out.Game.Id = "unexpected"
+		case "batch-mixed-nodes":
+			if index > 0 {
+				out.NodeId = "other-node"
+			}
+		case "batch-empty-node":
+			out.NodeId = ""
+		case "batch-nil-game":
+			out.Game = nil
+		case "batch-bad-phase":
+			out.Game.Phase = gamev1.GamePhase(99)
+		}
+		if err := stream.Send(out); err != nil {
+			return err
+		}
+		if mode == "batch-late-error" {
+			return status.Error(codes.Unavailable, "batch failed after the first game")
+		}
+	}
+	return nil
+}
+
+func TestBatchFailuresRemainProblemResponses(t *testing.T) {
+	handler := testHTTPHandler(t, &faultyService{Server: grpcsvc.New("backend")})
+	router := testOpenAPIRouter(t)
+	for _, tc := range []struct {
+		mode string
+		code int
+	}{
+		{"internal", 500}, {"unimplemented", 501}, {"unavailable", 503}, {"deadline", 504},
+		{"batch-empty-stream", 500}, {"batch-short-stream", 500}, {"batch-extra-stream", 500},
+		{"batch-wrong-order", 500}, {"batch-mixed-nodes", 500}, {"batch-empty-node", 500},
+		{"batch-nil-game", 500}, {"batch-bad-phase", 500}, {"batch-late-error", 503},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			checkREST(t, handler, router, "GET", "/v1/games?ids="+tc.mode+"&ids=second", "", tc.code)
+		})
+	}
+}
+
 func TestBackendFailuresRemainProblemResponses(t *testing.T) {
 	handler := testHTTPHandler(t, &faultyService{Server: grpcsvc.New("backend")})
 	router := testOpenAPIRouter(t)
@@ -288,12 +377,16 @@ func TestBackendFailuresRemainProblemResponses(t *testing.T) {
 
 func TestRequestDeadlineReachesGRPC(t *testing.T) {
 	handler := testHTTPHandler(t, &faultyService{Server: grpcsvc.New("backend")})
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	request := httptest.NewRequest("GET", "/v1/games/wait", nil).WithContext(ctx)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusGatewayTimeout || !strings.Contains(response.Body.String(), `"status":504`) {
-		t.Fatalf("wanted timeout problem response, got %d: %s", response.Code, response.Body.String())
+	for _, path := range []string{"/v1/games/wait", "/v1/games?ids=wait"} {
+		t.Run(path, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			request := httptest.NewRequest("GET", path, nil).WithContext(ctx)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusGatewayTimeout || !strings.Contains(response.Body.String(), `"status":504`) {
+				t.Fatalf("wanted timeout problem response, got %d: %s", response.Code, response.Body.String())
+			}
+		})
 	}
 }

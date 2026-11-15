@@ -105,6 +105,46 @@ func (h *Handlers) GetGame(ctx context.Context, req rest.GetGameRequestObject) (
 	return rest.GetGame200JSONResponse(body), nil
 }
 
+// GET /v1/games?ids=game-a&ids=game-b
+func (h *Handlers) GetGames(ctx context.Context, req rest.GetGamesRequestObject) (rest.GetGamesResponseObject, error) {
+	consistency, err := toProtoConsistency(req.Params.Consistency)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := h.Game.GetGames(ctx, &gamev1.GetGamesRequest{GameIds: req.Params.Ids, Consistency: consistency})
+	if err != nil {
+		return nil, err
+	}
+	out := rest.GamesResponse{Games: make([]rest.Game, 0, len(req.Params.Ids))}
+	for {
+		message, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		index := len(out.Games)
+		if index >= len(req.Params.Ids) || message.GetGame().GetId() != req.Params.Ids[index] {
+			return nil, status.Error(codes.Internal, "batch reply does not match the requested game IDs")
+		}
+		body, err := gameResponseFromProto(message.GetGame(), message.GetNodeId())
+		if err != nil {
+			return nil, err
+		}
+		if index == 0 {
+			out.NodeId = body.NodeId
+		} else if out.NodeId != body.NodeId {
+			return nil, status.Error(codes.Internal, "batch reply contains different node IDs")
+		}
+		out.Games = append(out.Games, body.Game)
+	}
+	if len(out.Games) != len(req.Params.Ids) || len(out.Games) == 0 {
+		return nil, status.Error(codes.Internal, "batch reply is missing requested games")
+	}
+	return rest.GetGames200JSONResponse(out), nil
+}
+
 // POST /v1/games/{gameId}/players
 func (h *Handlers) JoinGame(ctx context.Context, req rest.JoinGameRequestObject) (rest.JoinGameResponseObject, error) {
 	out, err := h.Game.JoinGame(ctx, &gamev1.JoinGameRequest{GameId: req.GameId, Name: req.Body.Name, Seat: int32(req.Body.Seat)})

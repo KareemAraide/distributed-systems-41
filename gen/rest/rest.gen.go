@@ -372,6 +372,17 @@ type GameResponse struct {
 	NodeId string `json:"nodeId"`
 }
 
+// GamesResponse defines model for GamesResponse.
+type GamesResponse struct {
+	// Games Public game snapshots in the same order as the requested IDs
+	Games []Game `json:"games"`
+
+	// NodeId Identity of the gRPC node that produced every snapshot in this batch
+	//
+	// Example: n1
+	NodeId string `json:"nodeId"`
+}
+
 // HandResponse defines model for HandResponse.
 type HandResponse struct {
 	// Cards Remaining cards sorted by suit C, D, S, H and rank ascending; empty is an empty array
@@ -502,6 +513,9 @@ type DealNumber = int64
 // GameId defines model for GameId.
 type GameId = string
 
+// GameIds defines model for GameIds.
+type GameIds = []string
+
 // PlayerId defines model for PlayerId.
 type PlayerId = string
 
@@ -529,15 +543,24 @@ type NotImplemented = Problem
 // Unavailable defines model for Unavailable.
 type Unavailable = Problem
 
+// GetGamesParams defines parameters for GetGames.
+type GetGamesParams struct {
+	// Ids Nonempty, distinct game IDs, repeated in the desired result order
+	Ids GameIds `form:"ids" json:"ids"`
+
+	// Consistency Optional read consistency; Part I forwards it without enforcing guarantees
+	Consistency *Consistency `form:"consistency,omitempty" json:"consistency,omitempty"`
+}
+
 // GetGameParams defines parameters for GetGame.
 type GetGameParams struct {
-	// Consistency Required read consistency, enforced from Part III
+	// Consistency Optional read consistency; Part I forwards it without enforcing guarantees
 	Consistency *Consistency `form:"consistency,omitempty" json:"consistency,omitempty"`
 }
 
 // GetHandParams defines parameters for GetHand.
 type GetHandParams struct {
-	// Consistency Required read consistency, enforced from Part III
+	// Consistency Optional read consistency; Part I forwards it without enforcing guarantees
 	Consistency *Consistency `form:"consistency,omitempty" json:"consistency,omitempty"`
 }
 
@@ -561,6 +584,9 @@ type JoinGameJSONRequestBody = JoinGameBody
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// GetGames Read several games in one batch
+	// (GET /v1/games)
+	GetGames(w http.ResponseWriter, r *http.Request, params GetGamesParams)
 	// CreateGame Create a game and seat its creator
 	// (POST /v1/games)
 	CreateGame(w http.ResponseWriter, r *http.Request)
@@ -595,6 +621,52 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// GetGames operation middleware
+func (siw *ServerInterfaceWrapper) GetGames(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetGamesParams
+
+	// ------------- Required query parameter "ids" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "ids", r.URL.Query(), &params.Ids, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "ids"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "ids", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "consistency" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "consistency", r.URL.Query(), &params.Consistency, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "consistency"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "consistency", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetGames(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // CreateGame operation middleware
 func (siw *ServerInterfaceWrapper) CreateGame(w http.ResponseWriter, r *http.Request) {
@@ -980,6 +1052,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/games", wrapper.GetGames)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/games", wrapper.CreateGame)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/games/{gameId}", wrapper.GetGame)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/games/{gameId}/players", wrapper.JoinGame)
@@ -1007,6 +1080,124 @@ type NotFoundApplicationProblemPlusJSONResponse Problem
 type NotImplementedApplicationProblemPlusJSONResponse Problem
 
 type UnavailableApplicationProblemPlusJSONResponse Problem
+
+type GetGamesRequestObject struct {
+	Params GetGamesParams
+}
+
+type GetGamesResponseObject interface {
+	VisitGetGamesResponse(w http.ResponseWriter) error
+}
+
+type GetGames200JSONResponse GamesResponse
+
+func (response GetGames200JSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGames400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response GetGames400ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGames404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetGames404ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGames500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetGames500ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGames501ApplicationProblemPlusJSONResponse struct {
+	NotImplementedApplicationProblemPlusJSONResponse
+}
+
+func (response GetGames501ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(501)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGames503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response GetGames503ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGames504ApplicationProblemPlusJSONResponse struct {
+	GatewayTimeoutApplicationProblemPlusJSONResponse
+}
+
+func (response GetGames504ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(504)
+	_, err := buf.WriteTo(w)
+	return err
+}
 
 type CreateGameRequestObject struct {
 	Body *CreateGameJSONRequestBody
@@ -2061,6 +2252,9 @@ func (response GetHand504ApplicationProblemPlusJSONResponse) VisitGetHandRespons
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// GetGames Read several games in one batch
+	// (GET /v1/games)
+	GetGames(ctx context.Context, request GetGamesRequestObject) (GetGamesResponseObject, error)
 	// CreateGame Create a game and seat its creator
 	// (POST /v1/games)
 	CreateGame(ctx context.Context, request CreateGameRequestObject) (CreateGameResponseObject, error)
@@ -2124,6 +2318,32 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// GetGames operation middleware
+func (sh *strictHandler) GetGames(w http.ResponseWriter, r *http.Request, params GetGamesParams) {
+	var request GetGamesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetGames(ctx, request.(GetGamesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetGames")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetGamesResponseObject); ok {
+		if err := validResponse.VisitGetGamesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // CreateGame operation middleware
