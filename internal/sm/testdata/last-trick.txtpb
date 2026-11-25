@@ -1,0 +1,19 @@
+game_sequence: 1
+player_sequence: 4
+games { key: "game-1" value {
+ id: "game-1"
+ phase: GAME_PHASE_PLAYING
+ participants { id: "player-1" name: "Kareem" seat: 0 hand: "AH" }
+ participants { id: "player-2" name: "Awes" seat: 1 hand: "KH" }
+ participants { id: "player-3" name: "Dana" seat: 2 hand: "QH" }
+ participants { id: "player-4" name: "Sami" seat: 3 hand: "JH" }
+ deal { number: 1 status: DEAL_STATUS_PLAYING next_seat: 0
+ bids { player_id: "player-1" amount: 4 points: 4 }
+ bids { player_id: "player-2" amount: 3 points: 3 }
+ bids { player_id: "player-3" amount: 3 points: 3 }
+ bids { player_id: "player-4" amount: 3 points: 3 }
+ tricks_won: 3 tricks_won: 3 tricks_won: 3 tricks_won: 3
+ completed_tricks: 12
+ current_trick { number: 13 leader_seat: 0 }
+ }
+} }

@@ -26,6 +26,7 @@ import (
 	gamev1 "github.com/KareemAraide/distributed-systems-41/gen/game/v1"
 	"github.com/KareemAraide/distributed-systems-41/internal/grpcsvc"
 	"github.com/KareemAraide/distributed-systems-41/internal/httpapi"
+	"github.com/KareemAraide/distributed-systems-41/internal/sm"
 )
 
 func main() {
@@ -33,11 +34,21 @@ func main() {
 	httpAddr := flag.String("http", ":8080", "client REST listen address")
 	grpcAddr := flag.String("grpc", ":50051", "internal gRPC listen address")
 	target := flag.String("target", "", "gRPC address the REST handlers call (default: this node)")
+	snapshot := flag.String("snapshot", "", "initial Snapshot in prototext; empty starts with no games")
 	corsOrigin := flag.String("cors-origin", "", `allowed CORS origin for browser tools on another port, e.g. "*" (dev only; empty = off)`)
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	state, applied := sm.NewState(), int64(0)
+	if *snapshot != "" {
+		var err error
+		state, applied, err = grpcsvc.LoadSnapshot(*snapshot)
+		if err != nil {
+			log.Fatalf("load snapshot: %v", err)
+		}
+	}
 
 	// --- gRPC server (step 4) ----------------------------------------------
 	lis, err := net.Listen("tcp", *grpcAddr)
@@ -45,7 +56,7 @@ func main() {
 		log.Fatalf("listen %s: %v", *grpcAddr, err)
 	}
 	gs := grpc.NewServer()
-	gamev1.RegisterGameServiceServer(gs, grpcsvc.New(*id))
+	gamev1.RegisterGameServiceServer(gs, grpcsvc.New(ctx, *id, state, applied))
 	reflection.Register(gs) // lets you poke the server with grpcurl
 	go func() {
 		log.Printf("[%s] gRPC listening on %s", *id, *grpcAddr)

@@ -1,0 +1,15 @@
+# Four seated players, before their first deal.
+# proto-message: game.v1.Snapshot
+state {
+game_sequence: 1
+player_sequence: 4
+games { key: "game-1" value {
+ id: "game-1"
+ phase: GAME_PHASE_READY
+ participants { id: "player-1" name: "Kareem" seat: 0 }
+ participants { id: "player-2" name: "Awes" seat: 1 }
+ participants { id: "player-3" name: "Dana" seat: 2 }
+ participants { id: "player-4" name: "Sami" seat: 3 }
+} }
+}
+applied: 0

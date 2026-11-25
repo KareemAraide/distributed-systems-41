@@ -1,0 +1,92 @@
+// Part II: state, snapshots and commands, independent of the RPC requests.
+syntax = "proto3";
+package game.v1;
+import "game/v1/game.proto";
+import "google/protobuf/field_mask.proto";
+option go_package = "github.com/KareemAraide/distributed-systems-41/gen/game/v1;gamev1";
+
+message State {
+  map<string, StoredGame> games = 1;
+  int64 game_sequence = 2; // last assigned ID
+  int64 player_sequence = 3;
+  int32 game_limit = 4; // 0 means the default, 1000
+}
+message StoredGame {
+  string id = 1;
+  GamePhase phase = 2;
+  int32 dealer_seat = 3;
+  repeated Participant participants = 4;
+  StoredDeal deal = 5;
+  bool draw = 6;
+  optional int32 winner_team = 7;
+}
+message Participant {
+  string id = 1;
+  string name = 2;
+  int32 seat = 3;
+  int64 score = 4;
+  repeated string hand = 5; // private
+}
+message StoredDeal {
+  int64 number = 1;
+  DealStatus status = 2;
+  int32 dealer_seat = 3;
+  optional int32 next_seat = 4;
+  repeated Bid bids = 5;
+  repeated int32 tricks_won = 6; // four counters, indexed by seat
+  int32 completed_tricks = 7;
+  Trick current_trick = 8;
+  Trick last_trick = 9;
+}
+message Snapshot { State state = 1; int64 applied = 2; }
+message Command {
+  oneof kind {
+    Create create = 1;
+    ReadGames read_games = 2;
+    ReadHand read_hand = 3;
+    Apply apply = 4;
+  }
+}
+message Create { string name = 1; }
+message ReadGames {
+  repeated string game_ids = 1;
+  google.protobuf.FieldMask read_mask = 2;
+}
+message ReadHand { string game_id = 1; string player_id = 2; }
+message Apply { repeated Action actions = 1; }
+message Action {
+  string game_id = 1;
+  oneof kind {
+    Join join = 2;
+    StartDeal start_deal = 3;
+    PlaceBid place_bid = 4;
+    PlayCard play_card = 5;
+  }
+}
+message Join { string name = 1; int32 seat = 2; }
+message StartDeal {
+  string player_id = 1;
+  repeated string deck = 2; // generated before Submit; never chosen by a client
+}
+message PlaceBid { string player_id = 1; int64 deal_number = 2; int32 amount = 3; }
+message PlayCard { string player_id = 1; int64 deal_number = 2; string card = 3; }
+enum Code {
+  CODE_OK = 0;
+  CODE_INVALID_ARGUMENT = 1;
+  CODE_NOT_FOUND = 2;
+  CODE_ALREADY_EXISTS = 3;
+  CODE_FAILED_PRECONDITION = 4;
+  CODE_RESOURCE_EXHAUSTED = 5;
+}
+message Result {
+  Code code = 1;
+  string message = 2;
+  repeated Game games = 3;
+  Hand hand = 4;
+}
+message Hand {
+  string game_id = 1;
+  int64 deal_number = 2;
+  string player_id = 3;
+  repeated string cards = 4;
+}

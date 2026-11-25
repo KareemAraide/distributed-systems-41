@@ -1,4 +1,4 @@
-// STEPS 3-4 — The internal gRPC service (compile with `make gen-proto`).
+// STEPS 3-4 — The internal gRPC service (compile with make gen-proto).
 //
 //   * every RPC has its OWN request and response message
 //   * streams carry a variable number of items
@@ -26,15 +26,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	GameService_CreateGame_FullMethodName = "/game.v1.GameService/CreateGame"
-	GameService_GetGame_FullMethodName    = "/game.v1.GameService/GetGame"
-	GameService_GetGames_FullMethodName   = "/game.v1.GameService/GetGames"
-	GameService_JoinGame_FullMethodName   = "/game.v1.GameService/JoinGame"
-	GameService_StartDeal_FullMethodName  = "/game.v1.GameService/StartDeal"
-	GameService_CutDeck_FullMethodName    = "/game.v1.GameService/CutDeck"
-	GameService_PlaceBid_FullMethodName   = "/game.v1.GameService/PlaceBid"
-	GameService_PlayCard_FullMethodName   = "/game.v1.GameService/PlayCard"
-	GameService_GetHand_FullMethodName    = "/game.v1.GameService/GetHand"
+	GameService_CreateGame_FullMethodName   = "/game.v1.GameService/CreateGame"
+	GameService_GetGames_FullMethodName     = "/game.v1.GameService/GetGames"
+	GameService_GetHand_FullMethodName      = "/game.v1.GameService/GetHand"
+	GameService_ApplyActions_FullMethodName = "/game.v1.GameService/ApplyActions"
 )
 
 // GameServiceClient is the client API for GameService service.
@@ -42,15 +37,11 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type GameServiceClient interface {
 	CreateGame(ctx context.Context, in *CreateGameRequest, opts ...grpc.CallOption) (*CreateGameResponse, error)
-	GetGame(ctx context.Context, in *GetGameRequest, opts ...grpc.CallOption) (*GetGameResponse, error)
+	// One ID and several IDs use the same RPC. The mask selects public fields.
 	GetGames(ctx context.Context, in *GetGamesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetGamesResponse], error)
-	JoinGame(ctx context.Context, in *JoinGameRequest, opts ...grpc.CallOption) (*JoinGameResponse, error)
-	StartDeal(ctx context.Context, in *StartDealRequest, opts ...grpc.CallOption) (*StartDealResponse, error)
-	CutDeck(ctx context.Context, in *CutDeckRequest, opts ...grpc.CallOption) (*CutDeckResponse, error)
-	PlaceBid(ctx context.Context, in *PlaceBidRequest, opts ...grpc.CallOption) (*PlaceBidResponse, error)
-	PlayCard(ctx context.Context, in *PlayCardRequest, opts ...grpc.CallOption) (*PlayCardResponse, error)
-	// Send HandInfo first, then one card per message. An empty hand still has HandInfo.
 	GetHand(ctx context.Context, in *GetHandRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetHandResponse], error)
+	// One action or a whole batch: always one queued command.
+	ApplyActions(ctx context.Context, in *ApplyActionsRequest, opts ...grpc.CallOption) (*ApplyActionsResponse, error)
 }
 
 type gameServiceClient struct {
@@ -65,16 +56,6 @@ func (c *gameServiceClient) CreateGame(ctx context.Context, in *CreateGameReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateGameResponse)
 	err := c.cc.Invoke(ctx, GameService_CreateGame_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *gameServiceClient) GetGame(ctx context.Context, in *GetGameRequest, opts ...grpc.CallOption) (*GetGameResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetGameResponse)
-	err := c.cc.Invoke(ctx, GameService_GetGame_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -100,56 +81,6 @@ func (c *gameServiceClient) GetGames(ctx context.Context, in *GetGamesRequest, o
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type GameService_GetGamesClient = grpc.ServerStreamingClient[GetGamesResponse]
 
-func (c *gameServiceClient) JoinGame(ctx context.Context, in *JoinGameRequest, opts ...grpc.CallOption) (*JoinGameResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(JoinGameResponse)
-	err := c.cc.Invoke(ctx, GameService_JoinGame_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *gameServiceClient) StartDeal(ctx context.Context, in *StartDealRequest, opts ...grpc.CallOption) (*StartDealResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(StartDealResponse)
-	err := c.cc.Invoke(ctx, GameService_StartDeal_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *gameServiceClient) CutDeck(ctx context.Context, in *CutDeckRequest, opts ...grpc.CallOption) (*CutDeckResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CutDeckResponse)
-	err := c.cc.Invoke(ctx, GameService_CutDeck_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *gameServiceClient) PlaceBid(ctx context.Context, in *PlaceBidRequest, opts ...grpc.CallOption) (*PlaceBidResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(PlaceBidResponse)
-	err := c.cc.Invoke(ctx, GameService_PlaceBid_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *gameServiceClient) PlayCard(ctx context.Context, in *PlayCardRequest, opts ...grpc.CallOption) (*PlayCardResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(PlayCardResponse)
-	err := c.cc.Invoke(ctx, GameService_PlayCard_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *gameServiceClient) GetHand(ctx context.Context, in *GetHandRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetHandResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &GameService_ServiceDesc.Streams[1], GameService_GetHand_FullMethodName, cOpts...)
@@ -169,20 +100,26 @@ func (c *gameServiceClient) GetHand(ctx context.Context, in *GetHandRequest, opt
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type GameService_GetHandClient = grpc.ServerStreamingClient[GetHandResponse]
 
+func (c *gameServiceClient) ApplyActions(ctx context.Context, in *ApplyActionsRequest, opts ...grpc.CallOption) (*ApplyActionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyActionsResponse)
+	err := c.cc.Invoke(ctx, GameService_ApplyActions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GameServiceServer is the server API for GameService service.
 // All implementations must embed UnimplementedGameServiceServer
 // for forward compatibility.
 type GameServiceServer interface {
 	CreateGame(context.Context, *CreateGameRequest) (*CreateGameResponse, error)
-	GetGame(context.Context, *GetGameRequest) (*GetGameResponse, error)
+	// One ID and several IDs use the same RPC. The mask selects public fields.
 	GetGames(*GetGamesRequest, grpc.ServerStreamingServer[GetGamesResponse]) error
-	JoinGame(context.Context, *JoinGameRequest) (*JoinGameResponse, error)
-	StartDeal(context.Context, *StartDealRequest) (*StartDealResponse, error)
-	CutDeck(context.Context, *CutDeckRequest) (*CutDeckResponse, error)
-	PlaceBid(context.Context, *PlaceBidRequest) (*PlaceBidResponse, error)
-	PlayCard(context.Context, *PlayCardRequest) (*PlayCardResponse, error)
-	// Send HandInfo first, then one card per message. An empty hand still has HandInfo.
 	GetHand(*GetHandRequest, grpc.ServerStreamingServer[GetHandResponse]) error
+	// One action or a whole batch: always one queued command.
+	ApplyActions(context.Context, *ApplyActionsRequest) (*ApplyActionsResponse, error)
 	mustEmbedUnimplementedGameServiceServer()
 }
 
@@ -196,29 +133,14 @@ type UnimplementedGameServiceServer struct{}
 func (UnimplementedGameServiceServer) CreateGame(context.Context, *CreateGameRequest) (*CreateGameResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateGame not implemented")
 }
-func (UnimplementedGameServiceServer) GetGame(context.Context, *GetGameRequest) (*GetGameResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetGame not implemented")
-}
 func (UnimplementedGameServiceServer) GetGames(*GetGamesRequest, grpc.ServerStreamingServer[GetGamesResponse]) error {
 	return status.Error(codes.Unimplemented, "method GetGames not implemented")
 }
-func (UnimplementedGameServiceServer) JoinGame(context.Context, *JoinGameRequest) (*JoinGameResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method JoinGame not implemented")
-}
-func (UnimplementedGameServiceServer) StartDeal(context.Context, *StartDealRequest) (*StartDealResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method StartDeal not implemented")
-}
-func (UnimplementedGameServiceServer) CutDeck(context.Context, *CutDeckRequest) (*CutDeckResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CutDeck not implemented")
-}
-func (UnimplementedGameServiceServer) PlaceBid(context.Context, *PlaceBidRequest) (*PlaceBidResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method PlaceBid not implemented")
-}
-func (UnimplementedGameServiceServer) PlayCard(context.Context, *PlayCardRequest) (*PlayCardResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method PlayCard not implemented")
-}
 func (UnimplementedGameServiceServer) GetHand(*GetHandRequest, grpc.ServerStreamingServer[GetHandResponse]) error {
 	return status.Error(codes.Unimplemented, "method GetHand not implemented")
+}
+func (UnimplementedGameServiceServer) ApplyActions(context.Context, *ApplyActionsRequest) (*ApplyActionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyActions not implemented")
 }
 func (UnimplementedGameServiceServer) mustEmbedUnimplementedGameServiceServer() {}
 func (UnimplementedGameServiceServer) testEmbeddedByValue()                     {}
@@ -259,24 +181,6 @@ func _GameService_CreateGame_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
-func _GameService_GetGame_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetGameRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(GameServiceServer).GetGame(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: GameService_GetGame_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GameServiceServer).GetGame(ctx, req.(*GetGameRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _GameService_GetGames_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(GetGamesRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -288,96 +192,6 @@ func _GameService_GetGames_Handler(srv interface{}, stream grpc.ServerStream) er
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type GameService_GetGamesServer = grpc.ServerStreamingServer[GetGamesResponse]
 
-func _GameService_JoinGame_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(JoinGameRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(GameServiceServer).JoinGame(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: GameService_JoinGame_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GameServiceServer).JoinGame(ctx, req.(*JoinGameRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _GameService_StartDeal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(StartDealRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(GameServiceServer).StartDeal(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: GameService_StartDeal_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GameServiceServer).StartDeal(ctx, req.(*StartDealRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _GameService_CutDeck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CutDeckRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(GameServiceServer).CutDeck(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: GameService_CutDeck_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GameServiceServer).CutDeck(ctx, req.(*CutDeckRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _GameService_PlaceBid_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PlaceBidRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(GameServiceServer).PlaceBid(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: GameService_PlaceBid_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GameServiceServer).PlaceBid(ctx, req.(*PlaceBidRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _GameService_PlayCard_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PlayCardRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(GameServiceServer).PlayCard(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: GameService_PlayCard_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GameServiceServer).PlayCard(ctx, req.(*PlayCardRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _GameService_GetHand_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(GetHandRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -388,6 +202,24 @@ func _GameService_GetHand_Handler(srv interface{}, stream grpc.ServerStream) err
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type GameService_GetHandServer = grpc.ServerStreamingServer[GetHandResponse]
+
+func _GameService_ApplyActions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyActionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GameServiceServer).ApplyActions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GameService_ApplyActions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GameServiceServer).ApplyActions(ctx, req.(*ApplyActionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
 
 // GameService_ServiceDesc is the grpc.ServiceDesc for GameService service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -401,28 +233,8 @@ var GameService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _GameService_CreateGame_Handler,
 		},
 		{
-			MethodName: "GetGame",
-			Handler:    _GameService_GetGame_Handler,
-		},
-		{
-			MethodName: "JoinGame",
-			Handler:    _GameService_JoinGame_Handler,
-		},
-		{
-			MethodName: "StartDeal",
-			Handler:    _GameService_StartDeal_Handler,
-		},
-		{
-			MethodName: "CutDeck",
-			Handler:    _GameService_CutDeck_Handler,
-		},
-		{
-			MethodName: "PlaceBid",
-			Handler:    _GameService_PlaceBid_Handler,
-		},
-		{
-			MethodName: "PlayCard",
-			Handler:    _GameService_PlayCard_Handler,
+			MethodName: "ApplyActions",
+			Handler:    _GameService_ApplyActions_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

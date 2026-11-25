@@ -1,0 +1,7 @@
+game_sequence: 1
+player_sequence: 1
+games { key: "game-1" value {
+ id: "game-1"
+ phase: GAME_PHASE_WAITING
+ participants { id: "player-1" name: "Kareem" seat: 0 }
+} }

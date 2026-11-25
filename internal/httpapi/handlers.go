@@ -17,51 +17,38 @@
 // Handlers hold NO application state. That is deliberate: in Parts II-III
 // the gRPC target becomes "the server responsible for this request", which
 // is exactly the forwarding required by the assignment.
+// Part II shares four RPCs; requests and results pass through the executor.
 package httpapi
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	pb "github.com/KareemAraide/distributed-systems-41/gen/game/v1"
+	"github.com/KareemAraide/distributed-systems-41/gen/rest"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"io"
 	"net/http"
 	"time"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
-	gamev1 "github.com/KareemAraide/distributed-systems-41/gen/game/v1"
-	"github.com/KareemAraide/distributed-systems-41/gen/rest"
 )
 
-// Handlers implements rest.StrictServerInterface (one method per operationId).
-type Handlers struct {
-	Game gamev1.GameServiceClient
-}
+type Handlers struct{ Game pb.GameServiceClient }
 
-// Compile-time check: the build fails here if a method is missing or has the
-// wrong signature after you change openapi.yaml and regenerate.
 var _ rest.StrictServerInterface = (*Handlers)(nil)
 
-// NewHTTPHandler wires the strict handlers into a net/http mux.
-func NewHTTPHandler(game gamev1.GameServiceClient, mux *http.ServeMux) http.Handler {
-	badRequest := func(w http.ResponseWriter, r *http.Request, err error) {
-		writeProblem(w, http.StatusBadRequest, err.Error())
-	}
+func NewHTTPHandler(game pb.GameServiceClient, mux *http.ServeMux) http.Handler {
 	strict := rest.NewStrictHandlerWithOptions(&Handlers{Game: game}, []rest.StrictMiddlewareFunc{rpcDeadline}, rest.StrictHTTPServerOptions{
-		// Malformed requests (bad JSON, wrong parameter types) -> 400.
-		RequestErrorHandlerFunc: badRequest,
-		// Errors returned by the handlers below (usually gRPC errors).
+		RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) { writeProblem(w, 400, err.Error()) },
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 			writeProblem(w, httpStatusFromGRPC(err), errorMessage(err))
 		},
 	})
-	return rest.HandlerWithOptions(strict, rest.StdHTTPServerOptions{
-		BaseRouter: mux, ErrorHandlerFunc: badRequest,
+	next := rest.HandlerWithOptions(strict, rest.StdHTTPServerOptions{BaseURL: "/v1", BaseRouter: mux,
+		ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) { writeProblem(w, 400, err.Error()) },
 	})
+	return validateAPI(next)
 }
-
-// A stalled RPC should finish with a timeout instead of leaving the HTTP request open.
 func rpcDeadline(next rest.StrictHandlerFunc, operationID string) rest.StrictHandlerFunc {
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -69,236 +56,221 @@ func rpcDeadline(next rest.StrictHandlerFunc, operationID string) rest.StrictHan
 		return next(ctx, w, r, request)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// The example service (a key-value store). Replace it with your own service:
-// one method per operationId in your openapi.yaml.
-// ---------------------------------------------------------------------------
-
-// POST /v1/games
-func (h *Handlers) CreateGame(ctx context.Context, req rest.CreateGameRequestObject) (rest.CreateGameResponseObject, error) {
-	out, err := h.Game.CreateGame(ctx, &gamev1.CreateGameRequest{Name: req.Body.Name})
+func (h *Handlers) CreateGame(ctx context.Context, r rest.CreateGameRequestObject) (rest.CreateGameResponseObject, error) {
+	out, err := h.Game.CreateGame(ctx, &pb.CreateGameRequest{Name: r.Body.Name})
 	if err != nil {
 		return nil, err
 	}
 	body, err := gameResponseFromProto(out.GetGame(), out.GetNodeId())
-	if err != nil {
-		return nil, err
-	}
-	return rest.CreateGame201JSONResponse(body), nil
+	return rest.CreateGame201JSONResponse(body), err
 }
-
-// GET /v1/games/{gameId}
-func (h *Handlers) GetGame(ctx context.Context, req rest.GetGameRequestObject) (rest.GetGameResponseObject, error) {
-	consistency, err := toProtoConsistency(req.Params.Consistency)
+func (h *Handlers) GetGame(ctx context.Context, r rest.GetGameRequestObject) (rest.GetGameResponseObject, error) {
+	out, err := h.readGames(ctx, []string{r.GameId}, r.Params.Fields)
 	if err != nil {
 		return nil, err
 	}
-	out, err := h.Game.GetGame(ctx, &gamev1.GetGameRequest{GameId: req.GameId, Consistency: consistency})
-	if err != nil {
-		return nil, err
-	}
-	body, err := gameResponseFromProto(out.GetGame(), out.GetNodeId())
-	if err != nil {
-		return nil, err
-	}
-	return rest.GetGame200JSONResponse(body), nil
+	return rest.GetGame200JSONResponse(rest.GameReadResponse{Game: out.Games[0], NodeId: out.NodeId}), nil
 }
-
-// GET /v1/games?ids=game-a&ids=game-b
-func (h *Handlers) GetGames(ctx context.Context, req rest.GetGamesRequestObject) (rest.GetGamesResponseObject, error) {
-	consistency, err := toProtoConsistency(req.Params.Consistency)
+func (h *Handlers) GetGames(ctx context.Context, r rest.GetGamesRequestObject) (rest.GetGamesResponseObject, error) {
+	out, err := h.readGames(ctx, r.Params.Ids, r.Params.Fields)
+	return rest.GetGames200JSONResponse(out), err
+}
+func (h *Handlers) readGames(ctx context.Context, ids []string, fields *rest.Fields) (rest.GamesResponse, error) {
+	out := rest.GamesResponse{Games: []rest.GameView{}}
+	mask, err := maskFromFields(fields)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	stream, err := h.Game.GetGames(ctx, &gamev1.GetGamesRequest{GameIds: req.Params.Ids, Consistency: consistency})
+	stream, err := h.Game.GetGames(ctx, &pb.GetGamesRequest{GameIds: ids, ReadMask: mask})
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	out := rest.GamesResponse{Games: make([]rest.Game, 0, len(req.Params.Ids))}
+	fin := false
 	for {
-		message, err := stream.Recv()
+		msg, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			if !fin {
+				return out, status.Error(codes.Unavailable, "game stream ended without fin")
+			}
+			break
+		}
+		if err != nil {
+			return out, err
+		}
+		if fin {
+			return out, status.Error(codes.Internal, "message after fin")
+		}
+		if msg.GetNodeId() == "" {
+			return out, status.Error(codes.Internal, "game stream has no node ID")
+		}
+		if out.NodeId == "" {
+			out.NodeId = msg.NodeId
+		} else if out.NodeId != msg.NodeId {
+			return out, status.Error(codes.Internal, "mixed node IDs")
+		}
+		if msg.GetFin() {
+			if msg.GetGame() != nil {
+				return out, status.Error(codes.Internal, "expected a fin-only game message")
+			}
+			fin = true
+			continue
+		}
+		i := len(out.Games)
+		if msg.GetGame() == nil || i >= len(ids) || msg.Game.Id != ids[i] {
+			return out, status.Error(codes.Internal, "game stream does not match requested IDs")
+		}
+		view, err := viewFromProto(msg.Game, mask)
+		if err != nil {
+			return out, err
+		}
+		out.Games = append(out.Games, view)
+	}
+	if len(out.Games) != len(ids) || len(ids) == 0 {
+		return out, status.Error(codes.Internal, "game stream is incomplete")
+	}
+	return out, nil
+}
+func (h *Handlers) apply(ctx context.Context, actions []*pb.GameAction) (rest.BatchResponse, error) {
+	out, err := h.Game.ApplyActions(ctx, &pb.ApplyActionsRequest{Actions: actions})
+	if err != nil {
+		return rest.BatchResponse{}, err
+	}
+	if out.GetNodeId() == "" || len(out.GetGames()) != len(actions) {
+		return rest.BatchResponse{}, status.Error(codes.Internal, "action reply is incomplete")
+	}
+	body := rest.BatchResponse{Games: []rest.Game{}, NodeId: out.NodeId}
+	for i, g := range out.Games {
+		if g.GetId() != actions[i].GameId {
+			return body, status.Error(codes.Internal, "action reply has the wrong game")
+		}
+		converted, err := gameResponseFromProto(g, out.NodeId)
+		if err != nil {
+			return body, err
+		}
+		body.Games = append(body.Games, converted.Game)
+	}
+	return body, nil
+}
+func single(body rest.BatchResponse) rest.GameResponse {
+	return rest.GameResponse{Game: body.Games[0], NodeId: body.NodeId}
+}
+func (h *Handlers) JoinGame(ctx context.Context, r rest.JoinGameRequestObject) (rest.JoinGameResponseObject, error) {
+	out, err := h.apply(ctx, []*pb.GameAction{{GameId: r.GameId, Action: &pb.GameAction_Join{Join: &pb.JoinAction{Name: r.Body.Name, Seat: int32(r.Body.Seat)}}}})
+	if err != nil {
+		return nil, err
+	}
+	return rest.JoinGame201JSONResponse(single(out)), nil
+}
+func (h *Handlers) StartDeal(ctx context.Context, r rest.StartDealRequestObject) (rest.StartDealResponseObject, error) {
+	out, err := h.apply(ctx, []*pb.GameAction{{GameId: r.GameId, Action: &pb.GameAction_StartDeal{StartDeal: &pb.StartDealAction{PlayerId: r.Body.PlayerId}}}})
+	if err != nil {
+		return nil, err
+	}
+	return rest.StartDeal201JSONResponse(single(out)), nil
+}
+func (h *Handlers) PlaceBid(ctx context.Context, r rest.PlaceBidRequestObject) (rest.PlaceBidResponseObject, error) {
+	out, err := h.apply(ctx, []*pb.GameAction{{GameId: r.GameId, Action: &pb.GameAction_Bid{Bid: &pb.BidAction{PlayerId: r.Body.PlayerId, DealNumber: r.DealNumber, Amount: int32(r.Body.Amount)}}}})
+	if err != nil {
+		return nil, err
+	}
+	return rest.PlaceBid201JSONResponse(single(out)), nil
+}
+func (h *Handlers) PlayCard(ctx context.Context, r rest.PlayCardRequestObject) (rest.PlayCardResponseObject, error) {
+	out, err := h.apply(ctx, []*pb.GameAction{{GameId: r.GameId, Action: &pb.GameAction_Play{Play: &pb.PlayAction{PlayerId: r.Body.PlayerId, DealNumber: r.DealNumber, Card: r.Body.Card}}}})
+	if err != nil {
+		return nil, err
+	}
+	return rest.PlayCard201JSONResponse(single(out)), nil
+}
+func (h *Handlers) ApplyBatch(ctx context.Context, r rest.ApplyBatchRequestObject) (rest.ApplyBatchResponseObject, error) {
+	actions := make([]*pb.GameAction, 0, len(r.Body.Actions))
+	for _, a := range r.Body.Actions {
+		action, err := actionFromREST(a)
+		if err != nil {
+			return nil, err
+		}
+		actions = append(actions, action)
+	}
+	out, err := h.apply(ctx, actions)
+	return rest.ApplyBatch200JSONResponse(out), err
+}
+func (h *Handlers) GetHand(ctx context.Context, r rest.GetHandRequestObject) (rest.GetHandResponseObject, error) {
+	stream, err := h.Game.GetHand(ctx, &pb.GetHandRequest{GameId: r.GameId, PlayerId: r.PlayerId})
+	if err != nil {
+		return nil, err
+	}
+	out := rest.HandResponse{Cards: []rest.Card{}}
+	info, fin := false, false
+	seen := map[string]bool{}
+	for {
+		msg, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			if !fin {
+				return nil, status.Error(codes.Unavailable, "hand stream ended without fin")
+			}
 			break
 		}
 		if err != nil {
 			return nil, err
 		}
-		index := len(out.Games)
-		if index >= len(req.Params.Ids) || message.GetGame().GetId() != req.Params.Ids[index] {
-			return nil, status.Error(codes.Internal, "batch reply does not match the requested game IDs")
+		if fin {
+			return nil, status.Error(codes.Internal, "message after fin")
 		}
-		body, err := gameResponseFromProto(message.GetGame(), message.GetNodeId())
-		if err != nil {
-			return nil, err
+		if msg.GetFin() {
+			if msg.GetItem() != nil || !info {
+				return nil, status.Error(codes.Internal, "invalid hand fin")
+			}
+			fin = true
+			continue
 		}
-		if index == 0 {
-			out.NodeId = body.NodeId
-		} else if out.NodeId != body.NodeId {
-			return nil, status.Error(codes.Internal, "batch reply contains different node IDs")
+		switch item := msg.GetItem().(type) {
+		case *pb.GetHandResponse_Info:
+			if info || item.Info.GetGameId() != r.GameId || item.Info.GetPlayerId() != r.PlayerId || item.Info.GetDealNumber() < 1 || item.Info.GetNodeId() == "" {
+				return nil, status.Error(codes.Internal, "invalid hand metadata")
+			}
+			out.GameId, out.PlayerId, out.DealNumber, out.NodeId = item.Info.GameId, item.Info.PlayerId, item.Info.DealNumber, item.Info.NodeId
+			info = true
+		case *pb.GetHandResponse_Card:
+			if !info || !validWireCard(item.Card) || seen[item.Card] || len(out.Cards) >= 13 {
+				return nil, status.Error(codes.Internal, "invalid hand card")
+			}
+			seen[item.Card] = true
+			out.Cards = append(out.Cards, item.Card)
+		default:
+			return nil, status.Error(codes.Internal, "empty hand message")
 		}
-		out.Games = append(out.Games, body.Game)
-	}
-	if len(out.Games) != len(req.Params.Ids) || len(out.Games) == 0 {
-		return nil, status.Error(codes.Internal, "batch reply is missing requested games")
-	}
-	return rest.GetGames200JSONResponse(out), nil
-}
-
-// POST /v1/games/{gameId}/players
-func (h *Handlers) JoinGame(ctx context.Context, req rest.JoinGameRequestObject) (rest.JoinGameResponseObject, error) {
-	out, err := h.Game.JoinGame(ctx, &gamev1.JoinGameRequest{GameId: req.GameId, Name: req.Body.Name, Seat: int32(req.Body.Seat)})
-	if err != nil {
-		return nil, err
-	}
-	body, err := gameResponseFromProto(out.GetGame(), out.GetNodeId())
-	if err != nil {
-		return nil, err
-	}
-	return rest.JoinGame201JSONResponse(body), nil
-}
-
-// POST /v1/games/{gameId}/deals
-func (h *Handlers) StartDeal(ctx context.Context, req rest.StartDealRequestObject) (rest.StartDealResponseObject, error) {
-	out, err := h.Game.StartDeal(ctx, &gamev1.StartDealRequest{GameId: req.GameId, PlayerId: req.Body.PlayerId})
-	if err != nil {
-		return nil, err
-	}
-	body, err := gameResponseFromProto(out.GetGame(), out.GetNodeId())
-	if err != nil {
-		return nil, err
-	}
-	return rest.StartDeal201JSONResponse(body), nil
-}
-
-// POST /v1/games/{gameId}/deals/{dealNumber}/cuts
-func (h *Handlers) CutDeck(ctx context.Context, req rest.CutDeckRequestObject) (rest.CutDeckResponseObject, error) {
-	out, err := h.Game.CutDeck(ctx, &gamev1.CutDeckRequest{GameId: req.GameId, DealNumber: req.DealNumber, PlayerId: req.Body.PlayerId, CutPosition: req.Body.CutPosition})
-	if err != nil {
-		return nil, err
-	}
-	body, err := gameResponseFromProto(out.GetGame(), out.GetNodeId())
-	if err != nil {
-		return nil, err
-	}
-	return rest.CutDeck201JSONResponse(body), nil
-}
-
-// POST /v1/games/{gameId}/deals/{dealNumber}/bids
-func (h *Handlers) PlaceBid(ctx context.Context, req rest.PlaceBidRequestObject) (rest.PlaceBidResponseObject, error) {
-	out, err := h.Game.PlaceBid(ctx, &gamev1.PlaceBidRequest{GameId: req.GameId, DealNumber: req.DealNumber, PlayerId: req.Body.PlayerId, Amount: int32(req.Body.Amount)})
-	if err != nil {
-		return nil, err
-	}
-	body, err := gameResponseFromProto(out.GetGame(), out.GetNodeId())
-	if err != nil {
-		return nil, err
-	}
-	return rest.PlaceBid201JSONResponse(body), nil
-}
-
-// POST /v1/games/{gameId}/deals/{dealNumber}/plays
-func (h *Handlers) PlayCard(ctx context.Context, req rest.PlayCardRequestObject) (rest.PlayCardResponseObject, error) {
-	out, err := h.Game.PlayCard(ctx, &gamev1.PlayCardRequest{GameId: req.GameId, DealNumber: req.DealNumber, PlayerId: req.Body.PlayerId, Card: req.Body.Card})
-	if err != nil {
-		return nil, err
-	}
-	body, err := gameResponseFromProto(out.GetGame(), out.GetNodeId())
-	if err != nil {
-		return nil, err
-	}
-	return rest.PlayCard201JSONResponse(body), nil
-}
-
-// GET /v1/games/{gameId}/players/{playerId}/hand
-func (h *Handlers) GetHand(ctx context.Context, req rest.GetHandRequestObject) (rest.GetHandResponseObject, error) {
-	consistency, err := toProtoConsistency(req.Params.Consistency)
-	if err != nil {
-		return nil, err
-	}
-	stream, err := h.Game.GetHand(ctx, &gamev1.GetHandRequest{
-		GameId: req.GameId, PlayerId: req.PlayerId, Consistency: consistency,
-	})
-	if err != nil {
-		return nil, err
-	}
-	first, err := stream.Recv()
-	if errors.Is(err, io.EOF) {
-		return nil, status.Error(codes.Internal, "hand stream ended before its info message")
-	}
-	if err != nil {
-		return nil, err
-	}
-	info := first.GetInfo()
-	if info == nil || info.GetNodeId() == "" || info.GetDealNumber() < 1 ||
-		info.GetGameId() != req.GameId || info.GetPlayerId() != req.PlayerId {
-		return nil, status.Error(codes.Internal, "invalid hand info from gRPC")
-	}
-	out := rest.HandResponse{
-		GameId: info.GetGameId(), DealNumber: info.GetDealNumber(),
-		PlayerId: info.GetPlayerId(), NodeId: info.GetNodeId(),
-		Cards: make([]rest.Card, 0, 13),
-	}
-	for {
-		message, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		card, ok := message.GetItem().(*gamev1.GetHandResponse_Card)
-		if !ok || len(out.Cards) == 13 {
-			return nil, status.Error(codes.Internal, "invalid card message in hand stream")
-		}
-		out.Cards = append(out.Cards, card.Card)
 	}
 	return rest.GetHand200JSONResponse(out), nil
 }
-
-// httpStatusFromGRPC is the single place where gRPC status codes become HTTP
-// status codes. Keep it consistent with the responses in openapi.yaml.
 func httpStatusFromGRPC(err error) int {
-	if _, ok := status.FromError(err); !ok {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return http.StatusGatewayTimeout
-		}
-		return http.StatusInternalServerError
-	}
 	switch status.Code(err) {
-	case codes.NotFound:
-		return http.StatusNotFound // 404
-	case codes.AlreadyExists:
-		return http.StatusConflict // 409
 	case codes.InvalidArgument:
-		return http.StatusBadRequest // 400
+		return 400
+	case codes.NotFound:
+		return 404
+	case codes.AlreadyExists:
+		return 409
 	case codes.FailedPrecondition:
-		return http.StatusPreconditionFailed // 412
-	case codes.Unimplemented:
-		return http.StatusNotImplemented // 501
-	case codes.Unavailable:
-		return http.StatusServiceUnavailable // 503
+		return 412
+	case codes.Unavailable, codes.ResourceExhausted:
+		return 503
 	case codes.DeadlineExceeded:
-		return http.StatusGatewayTimeout // 504
+		return 504
 	default:
-		return http.StatusInternalServerError // 500
+		if errors.Is(err, context.DeadlineExceeded) {
+			return 504
+		}
+		return 500
 	}
 }
-
 func errorMessage(err error) string {
 	if st, ok := status.FromError(err); ok {
 		return st.Message()
 	}
 	return err.Error()
 }
-
-// writeProblem writes an RFC 9457 problem-details body.
-func writeProblem(w http.ResponseWriter, code int, detail string) {
+func writeProblem(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(rest.Problem{
-		Title:  http.StatusText(code),
-		Status: int32(code),
-		Detail: &detail,
-	})
+	_ = json.NewEncoder(w).Encode(rest.Problem{Title: http.StatusText(code), Status: int32(code), Detail: &message})
 }

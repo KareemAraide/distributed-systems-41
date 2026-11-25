@@ -1,16 +1,13 @@
-# Part I build. Requires: Go >= 1.26, protoc (https://protobuf.dev/installation/).
+# Part II build. Requires: Go >= 1.26, protoc (https://protobuf.dev/installation/).
 MODULE := github.com/KareemAraide/distributed-systems-41
 CORS ?=           # e.g. make run CORS='*'  (only for the API-tool containers on :8090-:8092)
 export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
-.PHONY: setup gen gen-rest gen-proto build run run2 demo check tools-up tools-down swagger-up swagger-down clean
+.PHONY: setup gen gen-rest gen-proto build test run run2 demo check tools-up tools-down swagger-up swagger-down clean
 
-# One-time: record the code generators as Go tools (pinned in go.mod) and install them.
+# One-time: install the code generators already pinned in go.mod.
 setup:
 	@command -v protoc >/dev/null || { echo "protoc not found. Install it: https://protobuf.dev/installation/ (macOS: brew install protobuf)"; exit 1; }
-	go get -tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest
-	go get -tool google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	go get -tool google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 	go install tool
 
 gen: gen-rest gen-proto
@@ -26,15 +23,18 @@ gen-proto:
 	protoc -I proto \
 	  --go_out=. --go_opt=module=$(MODULE) \
 	  --go-grpc_out=. --go-grpc_opt=module=$(MODULE) \
-	  proto/game/v1/game.proto
+	  proto/game/v1/game.proto proto/game/v1/sm.proto
 
 build: gen
 	go mod tidy
 	go vet ./...
 	go build -o bin/server ./cmd/server
 
+test: gen
+	go test -race ./...
+
 run: build
-	./bin/server -id n1 -http :8080 -grpc :50051 -cors-origin '$(CORS)'
+	./bin/server -id n1 -http :8080 -grpc :50051 -snapshot etc/sample-snapshot.txtpb -cors-origin '$(CORS)'
 
 # Second node whose REST API forwards every call to n1 over gRPC.
 run2:

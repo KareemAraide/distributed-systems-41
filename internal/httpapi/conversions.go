@@ -3,20 +3,13 @@ package httpapi
 import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"slices"
+	"strings"
 
 	gamev1 "github.com/KareemAraide/distributed-systems-41/gen/game/v1"
 	"github.com/KareemAraide/distributed-systems-41/gen/rest"
 )
-
-func toProtoConsistency(value *rest.Consistency) (gamev1.Consistency, error) {
-	if value == nil || string(*value) == "sequential" {
-		return gamev1.Consistency_CONSISTENCY_SEQUENTIAL, nil
-	}
-	if string(*value) == "linearizable" {
-		return gamev1.Consistency_CONSISTENCY_LINEARIZABLE, nil
-	}
-	return 0, status.Error(codes.InvalidArgument, "consistency must be sequential or linearizable")
-}
 
 func gameResponseFromProto(game *gamev1.Game, nodeID string) (rest.GameResponse, error) {
 	if game == nil || nodeID == "" {
@@ -59,7 +52,6 @@ func dealFromProto(deal *gamev1.Deal) (*rest.Deal, error) {
 	out := &rest.Deal{
 		Number: deal.GetNumber(), Status: dealStatus, DealerSeat: rest.Seat(deal.GetDealerSeat()),
 		CompletedTricks: deal.GetCompletedTricks(), NextSeat: seatFromProto(deal.NextSeat),
-		CutPosition:  deal.CutPosition,
 		Bids:         make([]rest.Bid, 0, len(deal.GetBids())),
 		PlayerStates: make([]rest.DealPlayerState, 0, len(deal.GetPlayerStates())),
 		CurrentTrick: trickFromProto(deal.GetCurrentTrick()),
@@ -112,8 +104,6 @@ func gamePhaseFromProto(phase gamev1.GamePhase) (rest.GamePhase, error) {
 		return rest.GamePhase("waiting"), nil
 	case gamev1.GamePhase_GAME_PHASE_READY:
 		return rest.GamePhase("ready"), nil
-	case gamev1.GamePhase_GAME_PHASE_CUTTING:
-		return rest.GamePhase("cutting"), nil
 	case gamev1.GamePhase_GAME_PHASE_BIDDING:
 		return rest.GamePhase("bidding"), nil
 	case gamev1.GamePhase_GAME_PHASE_PLAYING:
@@ -127,8 +117,6 @@ func gamePhaseFromProto(phase gamev1.GamePhase) (rest.GamePhase, error) {
 
 func dealStatusFromProto(value gamev1.DealStatus) (rest.DealStatus, error) {
 	switch value {
-	case gamev1.DealStatus_DEAL_STATUS_CUTTING:
-		return rest.DealStatus("cutting"), nil
 	case gamev1.DealStatus_DEAL_STATUS_BIDDING:
 		return rest.DealStatus("bidding"), nil
 	case gamev1.DealStatus_DEAL_STATUS_PLAYING:
@@ -140,4 +128,95 @@ func dealStatusFromProto(value gamev1.DealStatus) (rest.DealStatus, error) {
 	default:
 		return "", status.Errorf(codes.Internal, "unknown deal status from gRPC: %d", value)
 	}
+}
+
+func maskFromFields(value *rest.Fields) (*fieldmaskpb.FieldMask, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(string(*value)) == "" {
+		return nil, status.Error(codes.InvalidArgument, "fields cannot be empty")
+	}
+	names := map[string]string{"id": "id", "phase": "phase", "dealerSeat": "dealer_seat", "players": "players", "draw": "draw", "currentDeal": "current_deal", "winnerTeam": "winner_team"}
+	mask := &fieldmaskpb.FieldMask{}
+	for _, part := range strings.Split(string(*value), ",") {
+		name, ok := names[strings.TrimSpace(part)]
+		if !ok {
+			return nil, status.Error(codes.InvalidArgument, "unknown public field: "+part)
+		}
+		mask.Paths = append(mask.Paths, name)
+	}
+	mask.Normalize()
+	return mask, nil
+}
+func viewFromProto(g *gamev1.Game, mask *fieldmaskpb.FieldMask) (rest.GameView, error) {
+	if g == nil || g.GetId() == "" {
+		return rest.GameView{}, status.Error(codes.Internal, "missing game")
+	}
+	out := rest.GameView{Id: g.Id}
+	keep := func(name string) bool { return len(mask.GetPaths()) == 0 || slices.Contains(mask.Paths, name) }
+	if keep("phase") {
+		phase, err := gamePhaseFromProto(g.GetPhase())
+		if err != nil {
+			return out, err
+		}
+		out.Phase = &phase
+	}
+	if keep("dealer_seat") {
+		seat := rest.Seat(g.GetDealerSeat())
+		out.DealerSeat = &seat
+	}
+	if keep("draw") {
+		draw := g.GetDraw()
+		out.Draw = &draw
+	}
+	if keep("players") {
+		players := make([]rest.Player, 0, len(g.Players))
+		for _, p := range g.Players {
+			players = append(players, rest.Player{Id: p.GetId(), Name: p.GetName(), Seat: rest.Seat(p.GetSeat()), Team: rest.Team(p.GetTeam()), Score: p.GetScore(), MinimumBid: rest.BidAmount(p.GetMinimumBid())})
+		}
+		out.Players = &players
+	}
+	if keep("current_deal") {
+		d, err := dealFromProto(g.GetCurrentDeal())
+		if err != nil {
+			return out, err
+		}
+		out.CurrentDeal = d
+	}
+	if keep("winner_team") && g.WinnerTeam != nil {
+		team := rest.Team(*g.WinnerTeam)
+		out.WinnerTeam = &team
+	}
+	return out, nil
+}
+func actionFromREST(a rest.ActionBody) (*gamev1.GameAction, error) {
+	out := &gamev1.GameAction{GameId: a.GameId}
+	count := 0
+	if a.Join != nil {
+		count++
+		out.Action = &gamev1.GameAction_Join{Join: &gamev1.JoinAction{Name: a.Join.Name, Seat: int32(a.Join.Seat)}}
+	}
+	if a.StartDeal != nil {
+		count++
+		out.Action = &gamev1.GameAction_StartDeal{StartDeal: &gamev1.StartDealAction{PlayerId: a.StartDeal.PlayerId}}
+	}
+	if a.Bid != nil {
+		count++
+		out.Action = &gamev1.GameAction_Bid{Bid: &gamev1.BidAction{PlayerId: a.Bid.PlayerId, DealNumber: a.Bid.DealNumber, Amount: int32(a.Bid.Amount)}}
+	}
+	if a.Play != nil {
+		count++
+		out.Action = &gamev1.GameAction_Play{Play: &gamev1.PlayAction{PlayerId: a.Play.PlayerId, DealNumber: a.Play.DealNumber, Card: a.Play.Card}}
+	}
+	if count != 1 {
+		return nil, status.Error(codes.InvalidArgument, "each action needs exactly one kind")
+	}
+	return out, nil
+}
+func validWireCard(card string) bool {
+	if len(card) < 2 || !strings.Contains("CDSH", card[len(card)-1:]) {
+		return false
+	}
+	return slices.Contains([]string{"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"}, card[:len(card)-1])
 }

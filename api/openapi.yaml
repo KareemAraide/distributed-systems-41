@@ -13,409 +13,345 @@ openapi: 3.0.3
 #   * errors are application/problem+json (RFC 9457)
 # ---------------------------------------------------------------------------
 # API for the card game 41.
+# Part II reads select public fields; consistency options are deferred.
 info:
   title: Replicated 41 Card Game
-  version: 1.0.0
-  description: |
-    A four-player, two-team game of 41. This document defines the service
-    semantics for all parts of the assignment. Part I implements this contract
-    with dummy gRPC responses that identify the responding node, without storing
-    application state. Part II implements the local state machine. Part III
-    enforces the consistency guarantees through the replicated log.
+  version: 2.0.0
+  description: 'Four players, seats 0-3 increasing to the right; opposite seats are teammates.
 
-    **Objects and seating.** A game is the complete session. A deal consists of
-    shuffling, cutting, distributing 13 cards to each player, bidding, and playing
-    13 tricks. A trick consists of one card from each player. Seats 0, 1, 2, 3
-    run to the right, so the next seat is (seat + 1) modulo 4. Seats 0 and 2
-    form team 0; seats 1 and 3 form team 1. Creating a game seats its creator
-    at seat 0, with score 0, and makes that player the first dealer. Joining
-    fills a chosen empty seat. Membership is fixed once the first deal starts.
-    Names are display labels; player IDs identify participants. This teaching
-    API assumes trusted clients using their own player IDs.
+    The creator sits at 0 and is the first dealer. Membership is fixed after the first deal starts.
 
-    **Shuffle, cut, and deal.** Only the current dealer may start a deal.
-    The server randomly shuffles a standard 52-card deck without jokers;
-    clients cannot supply the deck order or a shuffle seed. The player to
-    the dealer's left, (dealerSeat + 3) modulo 4, chooses a cut position.
-    The top cards through that position, inclusive, move to the bottom
-    preserving their order. The server then deals one card per player per
-    cycle, starting to the dealer's right, until everyone has 13 cards.
-    This is one of the permitted equal-cycle dealing patterns. For Part III,
-    a shuffled order must be chosen once and included in the replicated
-    command, so replicas apply the same deterministic transition.
+    The dealer explicitly starts each deal. The server randomly shuffles all 52 cards, with no jokers,
 
-    **Bids.** After dealing, the dealer bids first and bidding proceeds right.
-    Bids are public, fixed once submitted, and range from 2 to 13 except 6.
-    The minimum depends on the player's current cumulative score:
+    and deals one card per player per cycle, beginning to the dealer''s right. There is no cutting step.
 
-    | Current score | Minimum bid |
-    | --- | --- |
-    | Below 30, including negative scores | 2 |
-    | 30-39 | 3 |
-    | 40-49 | 4 |
-    | 50-69 | 5 |
-    | 70-79 | 7 |
-    | 80-89 | 8 |
-    | 90-99 | 9 |
-    | 100-109 | 10 |
-    | 110-119 | 11 |
-    | 120-129 | 12 |
-    | 130 or above | 13 |
+    Bids run right from the dealer, 2-13 except 6. Minimum bids by score: below 30 -> 2;
 
-    If the four bids sum to less than 11, the deal is skipped without changing
-    scores. The dealer moves right and the game becomes ready for a fresh
-    shuffle, cut, deal, and bidding sequence. Otherwise, play begins with
-    the dealer leading the first trick.
+    30-39 -> 3; 40-49 -> 4; 50-69 -> 5; 70-79 -> 7; then 8,9,10,11,12 in successive tens;
 
-    **Cards and tricks.** Cards are encoded as rank followed by suit, for
-    example 10H or AS. Suits are C (clubs), D (diamonds), S (spades), and
-    H (hearts). Ranks increase as 2, 3, ..., 10, J, Q, K, A. The first card
-    establishes the trick's leading suit. Players must follow that suit if
-    they have it; otherwise they may play any card, without an obligation
-    to play hearts. The highest heart wins when any heart was played;
-    otherwise the highest card of the leading suit wins. Other suits cannot
-    win. Hearts may lead any trick, including the first. Turns proceed right,
-    and each trick's winner leads the next trick.
+    130 or above -> 13. Bids 7-13 are worth twice their amount.
 
-    **Scoring and winning.** After 13 tricks, update all four scores together.
-    A player who wins at least their bid receives the bid's point value;
-    otherwise that value is subtracted. Bids 2-5 are worth their face value;
-    bids 7-13 are worth twice their face value. Extra tricks award no extra
-    points, and scores may be negative. A team qualifies if either teammate
-    has at least 41 points. Exactly one qualifying team wins. If both teams
-    qualify, the game is drawn for now and continues until exactly one
-    qualifies after a later deal. If neither qualifies, play also continues.
-    For every new deal the dealer moves right. Scores are checked only
-    after all four score updates, never partway through scoring.
+    A total below 11 skips the deal without scoring and moves the dealer right; the new dealer starts
+    again.
 
-    **Read, write, and batch operations.** getGame and getHand read one
-    resource, the POST operations change state, and getGames reads several
-    selected games in one request. The batch preserves the requested order
-    and fails as a whole if any selected game does not exist.
-    The optional consistency=sequential|linearizable parameter is retained
-    for reads, defaulting to sequential. Following the course clarification,
-    consistency conditions are not a Part I requirement and are not enforced
-    by the dummy service. Every failed write leaves state unchanged.
-    A card play atomically validates the turn, ownership and following-suit
-    rule, removes the card, and advances or resolves the trick. The last play
-    of a deal also updates all scores and the game outcome atomically.
-    These are the service's read-modify-write semantics.
+    The dealer leads the first trick; each winner leads the next. Follow the leading suit when possible;
 
-    **Responses.** Public game snapshots never contain hands or the shuffled
-    deck. A hand is retrieved separately by game ID and player ID.
-    Successful replies carry nodeId so Part I can demonstrate which gRPC
-    server answered, including through a forwarding REST server.
-    Errors use RFC 9457 problem details. The planned central gRPC-to-HTTP
-    mapping is INVALID_ARGUMENT to 400, NOT_FOUND to 404, ALREADY_EXISTS to
-    409, FAILED_PRECONDITION to 412, UNIMPLEMENTED to 501, UNAVAILABLE to 503,
-    DEADLINE_EXCEEDED to 504, and other internal failures to 500.
+    otherwise any card is allowed. The highest heart wins; without hearts, the highest leading-suit card
+    wins.
+
+    Ranks increase 2 through A. Hearts may lead any trick.
+
+    After 13 tricks all scores update together: meeting/exceeding a bid adds its points; otherwise subtract.
+
+    Scores may be negative. Exactly one team having a player at 41 or above wins.
+
+    If both teams qualify, it is a draw for now and play continues. Otherwise continue until a team wins.
+
+    Every read and write goes through one executor. An entire batch is one atomic command.
+
+    GetGames serves single and multiple reads; FieldMask selects public sections. IDs are always included.
+
+    GetHand streams metadata, cards, and a final fin message; GetGames also ends with fin.
+
+    REST buffers streams before returning success. No fin means HTTP 503.
+
+    Hands and deck order are absent from public snapshots. Clients are trusted to use their own player
+    IDs.
+
+    State is in memory. Startup restores a prototext snapshot or starts empty; there is no automatic persistence.
+
+    A timeout after enqueue does not establish whether a write executed. Writes are not automatically
+    retried.'
 servers:
-  - url: /
-    description: The node serving this specification
-  - url: http://localhost:8080
-    description: Node n1; cross-origin browser tools need CORS enabled
+- url: /v1
+  description: This server
+- url: http://localhost:8080/v1
+  description: Node n1 from external API tools
 tags:
-  - name: games
-    description: Game creation, public state, and four-player seating
-  - name: deals
-    description: Shuffling, cutting, bidding, and card plays
-  - name: hands
-    description: A participant's remaining cards, separate from public game state
-
+- name: games
+  description: Games, participants, deals and atomic actions
 paths:
-  /v1/games:
+  /games:
     get:
-      tags: [games]
       operationId: getGames
-      summary: Read several games in one batch
-      description: |
-        Read the public snapshots of the selected games in one request.
-        Supply ids repeatedly, for example ?ids=game-a&ids=game-b.
-        At least one nonempty ID is required, and duplicate IDs return 400.
-        Results follow the request order and contain no player hands or deck.
-        If any game does not exist, return 404 for the entire request.
-        The HTTP layer waits for the whole gRPC stream before returning 200,
-        so a late backend failure never produces a partial success response.
-      parameters:
-        - $ref: '#/components/parameters/GameIds'
-        - $ref: '#/components/parameters/Consistency'
+      summary: Read selected games atomically, in request order
+      tags:
+      - games
       responses:
         '200':
-          description: All requested public game snapshots and the responding node ID
+          description: Success
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/GamesResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
+              schema:
+                $ref: '#/components/schemas/GamesResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
+      parameters:
+      - $ref: '#/components/parameters/GameIds'
+      - $ref: '#/components/parameters/Fields'
     post:
-      tags: [games]
       operationId: createGame
-      summary: Create a game and seat its creator
-      description: |
-        Write. The server assigns game and player IDs, seats the
-        named creator at seat 0, and initializes all scores to 0. The phase is
-        waiting, dealerSeat is 0, and draw is false. The creator finds their
-        player ID in the returned players entry for seat 0.
+      summary: Create a distinct game; creator sits at seat 0
+      tags:
+      - games
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CreateGameBody' }
-      responses:
-        '201':
-          description: Game created; public snapshot with the creator's player ID
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/GameResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-
-  /v1/games/{gameId}:
-    parameters:
-      - $ref: '#/components/parameters/GameId'
-    get:
-      tags: [games]
-      operationId: getGame
-      summary: Read public game state
-      description: |
-        Read only. Returns players, teams, scores, minimum bids, dealer,
-        phase, draw/winner information, and the current or most recent deal.
-        That deal includes public bids, card counts, tricks won, the next
-        acting seat, and current/last trick where applicable. Player hands
-        and the deck order are omitted. Players are ordered by seat.
-      parameters:
-        - $ref: '#/components/parameters/Consistency'
+            schema:
+              $ref: '#/components/schemas/CreateGameBody'
+      description: Names are display labels and may repeat. The state machine allocates a unique game
+        ID and creator ID. The default limit is 1000 games; the initial snapshot can set a different positive
+        gameLimit. Capacity failure leaves IDs unchanged.
+    patch:
+      operationId: applyBatch
+      summary: Apply 1-100 game actions atomically, in order
+      tags:
+      - games
       responses:
         '200':
-          description: Public game snapshot at the requested consistency
+          description: Success
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/GameResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-
-  /v1/games/{gameId}/players:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchBody'
+      description: One command for the entire batch. If any action fails, none of its changes or ID allocations
+        are kept. Later actions see earlier effects. Clients cannot supply a shuffled deck, scores or
+        hands.
+  /games/{gameId}:
     parameters:
-      - $ref: '#/components/parameters/GameId'
+    - $ref: '#/components/parameters/GameId'
+    get:
+      operationId: getGame
+      summary: Read one game using the GetGames RPC
+      tags:
+      - games
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameReadResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
+      parameters:
+      - $ref: '#/components/parameters/Fields'
+  /games/{gameId}/players:
+    parameters:
+    - $ref: '#/components/parameters/GameId'
     post:
-      tags: [games]
       operationId: joinGame
       summary: Join an empty seat before the first deal
-      description: |
-        Read-modify-write. Atomically reserve the selected empty
-        seat and assign a player ID, team and initial score of 0. Return 409
-        when the seat is occupied. Return 412 once the first deal has started.
-        The fourth player's arrival changes the phase from waiting to ready.
-        The joining player finds their ID in the returned entry for their seat.
+      tags:
+      - games
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '409':
+          $ref: '#/components/responses/Error409'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/JoinGameBody' }
-      responses:
-        '201':
-          description: Player joined; updated public game snapshot
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/GameResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
-        '412': { $ref: '#/components/responses/FailedPrecondition' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-
-  /v1/games/{gameId}/deals:
+            schema:
+              $ref: '#/components/schemas/JoinGameBody'
+  /games/{gameId}/deals:
     parameters:
-      - $ref: '#/components/parameters/GameId'
+    - $ref: '#/components/parameters/GameId'
     post:
-      tags: [deals]
       operationId: startDeal
-      summary: Start a deal with a server-generated random shuffle
-      description: |
-        Read-modify-write. Requires phase ready, four players,
-        and playerId belonging to the current dealer; otherwise return 412.
-        Create the next deal number, starting at 1, shuffle once on the
-        server, and enter phase cutting. Deal numbers also count skipped
-        deals. No hand is assigned until the cut is submitted. Clients
-        cannot choose the shuffled order or provide a seed.
+      summary: Dealer starts a random deal, immediately ready for bidding
+      tags:
+      - games
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/StartDealBody' }
-      responses:
-        '201':
-          description: Deal created; public game snapshot awaiting the cut
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/GameResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '412': { $ref: '#/components/responses/FailedPrecondition' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-
-  /v1/games/{gameId}/deals/{dealNumber}/cuts:
+            schema:
+              $ref: '#/components/schemas/StartDealBody'
+  /games/{gameId}/deals/{dealNumber}/bids:
     parameters:
-      - $ref: '#/components/parameters/GameId'
-      - $ref: '#/components/parameters/DealNumber'
+    - $ref: '#/components/parameters/GameId'
+    - $ref: '#/components/parameters/DealNumber'
     post:
-      tags: [deals]
-      operationId: cutDeck
-      summary: Cut the shuffled deck and distribute the cards
-      description: |
-        Read-modify-write. Requires the current deal, phase
-        cutting, and the player immediately to the dealer's left; otherwise
-        return 412. Move the first cutPosition cards to the bottom without
-        changing their relative order. Position 1 means the top card;
-        position 52 rotates the entire deck and leaves its order unchanged.
-        Deal 13 cards to each player in equal one-card cycles to the right.
-        Enter phase bidding with the dealer as nextSeat. This creates the
-        deal's single cut resource. Public responses contain no hand.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CutDeckBody' }
-      responses:
-        '201':
-          description: Cut recorded and hands dealt; updated public snapshot
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/GameResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '412': { $ref: '#/components/responses/FailedPrecondition' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-
-  /v1/games/{gameId}/deals/{dealNumber}/bids:
-    parameters:
-      - $ref: '#/components/parameters/GameId'
-      - $ref: '#/components/parameters/DealNumber'
-    post:
-      tags: [deals]
       operationId: placeBid
-      summary: Submit the next player's fixed bid
-      description: |
-        Read-modify-write. Requires the current deal, phase
-        bidding, the next player, no previous bid by that player, and the
-        score-dependent minimum; otherwise return 412. Values outside the
-        allowed bid enumeration, including 6, return 400.
-        Advance bidding to the right. On the fourth bid, atomically check
-        the sum. Below 11, mark the deal skipped, preserve scores, advance
-        the dealer right, and return the game to ready. Otherwise enter
-        phase playing with trick 1 led by the dealer. Bids appear in
-        submission order, starting with the dealer.
+      summary: Record a bid; resolve bidding after the fourth bid
+      tags:
+      - games
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/PlaceBidBody' }
-      responses:
-        '201':
-          description: Bid recorded; snapshot may show bidding, playing, or a skipped deal
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/GameResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '412': { $ref: '#/components/responses/FailedPrecondition' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-
-  /v1/games/{gameId}/deals/{dealNumber}/plays:
+            schema:
+              $ref: '#/components/schemas/PlaceBidBody'
+  /games/{gameId}/deals/{dealNumber}/plays:
     parameters:
-      - $ref: '#/components/parameters/GameId'
-      - $ref: '#/components/parameters/DealNumber'
+    - $ref: '#/components/parameters/GameId'
+    - $ref: '#/components/parameters/DealNumber'
     post:
-      tags: [deals]
       operationId: playCard
-      summary: Play one card and atomically advance the game
-      description: |
-        Read-modify-write. Requires the current deal, phase
-        playing, the next player, a card in that player's hand, and following
-        the leading suit when possible. A violated state precondition returns
-        412 without changing anything. An invalid card encoding returns 400.
-        Atomically remove the card and append the play. After four plays,
-        determine the winner, increment that player's trick count, retain
-        the resolved trick as lastTrick, and let the winner lead the next.
-        On trick 13, apply all four score changes, mark the deal completed,
-        and evaluate both teams together. Exactly one qualifying team sets
-        winnerTeam and phase finished. Otherwise set phase ready, advance
-        dealerSeat right, and set draw true only when both teams qualify.
-        The final play, scoring and winner decision are one atomic operation.
+      summary: Play a legal card; resolve tricks and scoring automatically
+      tags:
+      - games
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/PlayCardBody' }
-      responses:
-        '201':
-          description: Play recorded; snapshot includes any resulting trick, scoring, or winner changes
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/GameResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '412': { $ref: '#/components/responses/FailedPrecondition' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-
-  /v1/games/{gameId}/players/{playerId}/hand:
+            schema:
+              $ref: '#/components/schemas/PlayCardBody'
+  /games/{gameId}/players/{playerId}/hand:
     parameters:
-      - $ref: '#/components/parameters/GameId'
-      - $ref: '#/components/parameters/PlayerId'
+    - $ref: '#/components/parameters/GameId'
+    - $ref: '#/components/parameters/PlayerId'
     get:
-      tags: [hands]
       operationId: getHand
-      summary: Read a participant's remaining cards
-      description: |
-        Read only. Clients use their own player ID. Return only that
-        participant's hand from the current or most recent deal. Return 412
-        before any deal or while the current deal is awaiting its cut.
-        An empty hand after a completed deal is returned as an empty array.
-        Cards are ordered by suit C, D, S, H, then by increasing rank.
-        The variable-length card collection will be served by a streaming
-        RPC when the internal API is defined in Step 3.
-      parameters:
-        - $ref: '#/components/parameters/Consistency'
+      summary: Read remaining cards from the current or most recent deal
+      tags:
+      - games
       responses:
         '200':
-          description: Remaining cards at the requested consistency
+          description: Success
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/HandResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '412': { $ref: '#/components/responses/FailedPrecondition' }
-        '500': { $ref: '#/components/responses/InternalError' }
-        '501': { $ref: '#/components/responses/NotImplemented' }
-        '503': { $ref: '#/components/responses/Unavailable' }
-        '504': { $ref: '#/components/responses/GatewayTimeout' }
-
+              schema:
+                $ref: '#/components/schemas/HandResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '404':
+          $ref: '#/components/responses/Error404'
+        '412':
+          $ref: '#/components/responses/Error412'
+        '500':
+          $ref: '#/components/responses/Error500'
+        '503':
+          $ref: '#/components/responses/Error503'
+        '504':
+          $ref: '#/components/responses/Error504'
 components:
   parameters:
     GameIds:
@@ -429,216 +365,239 @@ components:
         type: array
         minItems: 1
         uniqueItems: true
-        items: { type: string, minLength: 1 }
+        items:
+          type: string
+          minLength: 1
+        maxItems: 100
     GameId:
       name: gameId
       in: path
       required: true
       description: Server-assigned game identifier
-      schema: { type: string, minLength: 1 }
+      schema:
+        type: string
+        minLength: 1
     PlayerId:
       name: playerId
       in: path
       required: true
       description: Server-assigned participant identifier
-      schema: { type: string, minLength: 1 }
+      schema:
+        type: string
+        minLength: 1
     DealNumber:
       name: dealNumber
       in: path
       required: true
       description: Deal number within the game; skipped deals are counted
-      schema: { type: integer, format: int64, minimum: 1 }
-    Consistency:
-      name: consistency
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    Fields:
+      name: fields
       in: query
       required: false
-      description: Optional read consistency; Part I forwards it without enforcing guarantees
-      schema: { $ref: '#/components/schemas/Consistency' }
-
+      description: 'Comma-separated top-level public fields: id, phase, dealerSeat, players, draw, currentDeal,
+        winnerTeam. Omit for all fields. id is always included. Empty or unknown paths return 400. Converted
+        to google.protobuf.FieldMask.'
+      schema:
+        type: string
+        minLength: 1
+      example: phase,players
   responses:
-    # All error responses use the same Problem schema.
-    Problem:
-      description: Error (RFC 9457 problem details)
+    Error400:
+      description: Invalid JSON, parameter, name, seat, mask, bid, card, or batch; INVALID_ARGUMENT.
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    BadRequest:
-      description: Malformed request or invalid value; gRPC INVALID_ARGUMENT
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error404:
+      description: Game, participant, or requested current deal does not exist; NOT_FOUND.
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    NotFound:
-      description: Game, participant, or deal does not exist; gRPC NOT_FOUND
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error409:
+      description: Requested seat is occupied; ALREADY_EXISTS.
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    Conflict:
-      description: Selected seat is occupied; gRPC ALREADY_EXISTS
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error412:
+      description: The phase, turn, actor, minimum bid or following-suit rule prevents the action; FAILED_PRECONDITION.
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    FailedPrecondition:
-      description: Current phase, turn, actor, bid minimum, or card legality prevents the action; gRPC FAILED_PRECONDITION
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error500:
+      description: Unexpected internal failure or malformed upstream reply.
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    InternalError:
-      description: Unexpected internal failure; other gRPC failures
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error503:
+      description: Game/ID/score capacity exhausted, executor stopped, upstream unavailable, or stream
+        ended without fin.
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    NotImplemented:
-      description: RPC is not implemented yet; gRPC UNIMPLEMENTED
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error504:
+      description: The request deadline expired.
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    Unavailable:
-      description: Target gRPC service is unavailable; gRPC UNAVAILABLE
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-    GatewayTimeout:
-      description: Deadline for the gRPC operation expired; gRPC DEADLINE_EXCEEDED
-      content:
-        application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
-
+          schema:
+            $ref: '#/components/schemas/Problem'
   schemas:
-    Consistency:
-      type: string
-      enum: [sequential, linearizable]
-      default: sequential
-
     Seat:
       type: integer
       format: int32
-      enum: [0, 1, 2, 3]
+      enum:
+      - 0
+      - 1
+      - 2
+      - 3
       description: Seats increase to the right; opposite seats differ by 2
-
     Team:
       type: integer
       format: int32
-      enum: [0, 1]
+      enum:
+      - 0
+      - 1
       description: Team 0 has seats 0 and 2; team 1 has seats 1 and 3
-
     BidAmount:
       type: integer
       format: int32
-      enum: [2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13]
+      enum:
+      - 2
+      - 3
+      - 4
+      - 5
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
       description: Bid in tricks; the player's current score may impose a higher minimum
-
     Card:
       type: string
-      pattern: '^([2-9]|10|J|Q|K|A)[CDSH]$'
+      pattern: ^([2-9]|10|J|Q|K|A)[CDSH]$
       description: Rank followed by suit; hearts are always trump; no jokers
       example: 10H
-
     CreateGameBody:
       type: object
-      required: [name]
+      required:
+      - name
       properties:
         name:
           type: string
           minLength: 1
           description: Display name of the creator, who occupies seat 0
           example: Kareem
-
+          maxLength: 80
+      additionalProperties: false
     JoinGameBody:
       type: object
-      required: [name, seat]
+      required:
+      - name
+      - seat
       properties:
         name:
           type: string
           minLength: 1
           description: Display name of the joining player
           example: Player Two
-        seat: { $ref: '#/components/schemas/Seat' }
-
+          maxLength: 80
+        seat:
+          $ref: '#/components/schemas/Seat'
+      additionalProperties: false
     StartDealBody:
       type: object
-      required: [playerId]
+      required:
+      - playerId
       properties:
         playerId:
           type: string
           minLength: 1
           description: Acting participant; must be the current dealer
           example: player-0
-
-    CutDeckBody:
-      type: object
-      required: [playerId, cutPosition]
-      properties:
-        playerId:
-          type: string
-          minLength: 1
-          description: Acting participant; must sit immediately left of the dealer
-          example: player-3
-        cutPosition:
-          type: integer
-          format: int32
-          minimum: 1
-          maximum: 52
-          description: Number of cards moved from the top to the bottom, including the selected card
-          example: 20
-
+      additionalProperties: false
     PlaceBidBody:
       type: object
-      required: [playerId, amount]
+      required:
+      - playerId
+      - amount
       properties:
         playerId:
           type: string
           minLength: 1
           description: Acting participant; must be next in the bidding order
           example: player-0
-        amount: { $ref: '#/components/schemas/BidAmount' }
-
+        amount:
+          $ref: '#/components/schemas/BidAmount'
+      additionalProperties: false
     PlayCardBody:
       type: object
-      required: [playerId, card]
+      required:
+      - playerId
+      - card
       properties:
         playerId:
           type: string
           minLength: 1
           description: Acting participant; must be next to play
           example: player-0
-        card: { $ref: '#/components/schemas/Card' }
-
+        card:
+          $ref: '#/components/schemas/Card'
+      additionalProperties: false
     GamesResponse:
       type: object
-      required: [games, nodeId]
+      required:
+      - games
+      - nodeId
       properties:
         games:
           type: array
           minItems: 1
           description: Public game snapshots in the same order as the requested IDs
-          items: { $ref: '#/components/schemas/Game' }
+          items:
+            $ref: '#/components/schemas/GameView'
+          maxItems: 100
         nodeId:
           type: string
           description: Identity of the gRPC node that produced every snapshot in this batch
           example: n1
-
     GameResponse:
       type: object
-      required: [game, nodeId]
+      required:
+      - game
+      - nodeId
       properties:
-        game: { $ref: '#/components/schemas/Game' }
+        game:
+          $ref: '#/components/schemas/Game'
         nodeId:
           type: string
-          description: Identity of the gRPC node producing this response, including when REST forwards to it
+          description: Identity of the gRPC node producing this response, including when REST forwards
+            to it
           example: n1
-
     Game:
       type: object
-      required: [id, phase, dealerSeat, players, draw]
+      required:
+      - id
+      - phase
+      - dealerSeat
+      - players
+      - draw
       properties:
         id:
           type: string
           description: Server-assigned game identifier
           example: game-1
         phase:
-          type: string
-          enum: [waiting, ready, cutting, bidding, playing, finished]
-          description: Waiting for players, ready for a deal, active deal phase, or a finished game
+          $ref: '#/components/schemas/GamePhase'
         dealerSeat:
           $ref: '#/components/schemas/Seat'
         players:
@@ -646,7 +605,8 @@ components:
           minItems: 1
           maxItems: 4
           description: Joined participants ordered by seat, with unique seats and IDs
-          items: { $ref: '#/components/schemas/Player' }
+          items:
+            $ref: '#/components/schemas/Player'
         draw:
           type: boolean
           description: Both teams qualified after the latest completed deal; continue playing while true
@@ -655,25 +615,37 @@ components:
           $ref: '#/components/schemas/Deal'
         winnerTeam:
           $ref: '#/components/schemas/Team'
-      description: |
-        Public state. currentDeal is omitted until the first deal is created
+      description: 'Public state. currentDeal is omitted until the first deal is created
+
         and otherwise retains the current or most recent deal. winnerTeam is
+
         present only in phase finished. dealerSeat identifies the active
+
         dealer during a deal and the next dealer in phase ready.
+
         A phase-finished game accepts no more state-changing operations.
 
+        '
     Player:
       type: object
-      required: [id, name, seat, team, score, minimumBid]
+      required:
+      - id
+      - name
+      - seat
+      - team
+      - score
+      - minimumBid
       properties:
         id:
           type: string
-          example: player-0
+          example: player-1
         name:
           type: string
           example: Kareem
-        seat: { $ref: '#/components/schemas/Seat' }
-        team: { $ref: '#/components/schemas/Team' }
+        seat:
+          $ref: '#/components/schemas/Seat'
+        team:
+          $ref: '#/components/schemas/Team'
         score:
           type: integer
           format: int64
@@ -681,10 +653,15 @@ components:
           example: -4
         minimumBid:
           $ref: '#/components/schemas/BidAmount'
-
     Deal:
       type: object
-      required: [number, status, dealerSeat, bids, playerStates, completedTricks]
+      required:
+      - number
+      - status
+      - dealerSeat
+      - bids
+      - playerStates
+      - completedTricks
       properties:
         number:
           type: integer
@@ -692,28 +669,29 @@ components:
           minimum: 1
         status:
           type: string
-          enum: [cutting, bidding, playing, skipped, completed]
-        dealerSeat: { $ref: '#/components/schemas/Seat' }
+          enum:
+          - bidding
+          - playing
+          - skipped
+          - completed
+        dealerSeat:
+          $ref: '#/components/schemas/Seat'
         nextSeat:
           $ref: '#/components/schemas/Seat'
-        cutPosition:
-          type: integer
-          format: int32
-          minimum: 1
-          maximum: 52
-          description: Present after the cut; absent while awaiting it
         bids:
           type: array
           minItems: 0
           maxItems: 4
           description: Public bids in submission order, beginning with the dealer
-          items: { $ref: '#/components/schemas/Bid' }
+          items:
+            $ref: '#/components/schemas/Bid'
         playerStates:
           type: array
           minItems: 4
           maxItems: 4
-          description: One entry per seat in seat order; card counts are 0 before the cut
-          items: { $ref: '#/components/schemas/DealPlayerState' }
+          description: One entry per seat in seat order
+          items:
+            $ref: '#/components/schemas/DealPlayerState'
         completedTricks:
           type: integer
           format: int32
@@ -723,18 +701,17 @@ components:
           $ref: '#/components/schemas/Trick'
         lastTrick:
           $ref: '#/components/schemas/Trick'
-      description: |
-        Public deal state. nextSeat identifies the cutting, bidding, or playing
-        participant and is absent for skipped/completed deals. currentTrick
-        exists only during play and has 0-3 plays. lastTrick is the most recent
-        resolved trick, with 4 plays and winnerSeat. It is retained after deal
-        completion; no currentTrick remains then.
-
+      description: Current or most recent deal. nextSeat is absent after a skipped/completed deal. A resolved
+        lastTrick is retained. Starting another deal requires the next dealer's request.
     DealPlayerState:
       type: object
-      required: [playerId, cardsRemaining, tricksWon]
+      required:
+      - playerId
+      - cardsRemaining
+      - tricksWon
       properties:
-        playerId: { type: string }
+        playerId:
+          type: string
         cardsRemaining:
           type: integer
           format: int32
@@ -745,69 +722,109 @@ components:
           format: int32
           minimum: 0
           maximum: 13
-
     Bid:
       type: object
-      required: [playerId, amount, points]
+      required:
+      - playerId
+      - amount
+      - points
       properties:
-        playerId: { type: string }
-        amount: { $ref: '#/components/schemas/BidAmount' }
+        playerId:
+          type: string
+        amount:
+          $ref: '#/components/schemas/BidAmount'
         points:
           type: integer
           format: int32
-          enum: [2, 3, 4, 5, 14, 16, 18, 20, 22, 24, 26]
-          description: Amount for bids 2-5, twice the amount for bids 7-13; added on success or subtracted on failure
-
+          enum:
+          - 2
+          - 3
+          - 4
+          - 5
+          - 14
+          - 16
+          - 18
+          - 20
+          - 22
+          - 24
+          - 26
+          description: Amount for bids 2-5, twice the amount for bids 7-13; added on success or subtracted
+            on failure
     Trick:
       type: object
-      required: [number, leaderSeat, plays]
+      required:
+      - number
+      - leaderSeat
+      - plays
       properties:
         number:
           type: integer
           format: int32
           minimum: 1
           maximum: 13
-        leaderSeat: { $ref: '#/components/schemas/Seat' }
+        leaderSeat:
+          $ref: '#/components/schemas/Seat'
         plays:
           type: array
           minItems: 0
           maxItems: 4
           description: Public plays in turn order; the first card determines the leading suit
-          items: { $ref: '#/components/schemas/CardPlay' }
+          items:
+            $ref: '#/components/schemas/CardPlay'
         winnerSeat:
           $ref: '#/components/schemas/Seat'
       description: winnerSeat is present only for a resolved trick with exactly four plays
-
     CardPlay:
       type: object
-      required: [playerId, card]
+      required:
+      - playerId
+      - card
       properties:
-        playerId: { type: string }
-        card: { $ref: '#/components/schemas/Card' }
-
+        playerId:
+          type: string
+        card:
+          $ref: '#/components/schemas/Card'
     HandResponse:
       type: object
-      required: [gameId, dealNumber, playerId, cards, nodeId]
+      required:
+      - gameId
+      - dealNumber
+      - playerId
+      - cards
+      - nodeId
       properties:
-        gameId: { type: string, example: game-1 }
-        dealNumber: { type: integer, format: int64, minimum: 1 }
-        playerId: { type: string, example: player-0 }
+        gameId:
+          type: string
+          example: game-1
+        dealNumber:
+          type: integer
+          format: int64
+          minimum: 1
+        playerId:
+          type: string
+          example: player-0
         cards:
           type: array
           minItems: 0
           maxItems: 13
           uniqueItems: true
-          description: Remaining cards sorted by suit C, D, S, H and rank ascending; empty is an empty array
-          items: { $ref: '#/components/schemas/Card' }
-          example: [2C, AC, 10H]
+          description: Remaining cards sorted by suit C, D, S, H and rank ascending; empty is an empty
+            array
+          items:
+            $ref: '#/components/schemas/Card'
+          example:
+          - 2C
+          - AC
+          - 10H
         nodeId:
           type: string
           description: Identity of the gRPC node producing the hand response
           example: n1
-
     Problem:
       type: object
-      required: [title, status]
+      required:
+      - title
+      - status
       properties:
         type:
           type: string
@@ -827,3 +844,133 @@ components:
           type: string
           description: Explanation specific to this failed request
           example: Player at seat 1 cannot play while nextSeat is 0.
+    GamePhase:
+      type: string
+      enum:
+      - waiting
+      - ready
+      - bidding
+      - playing
+      - finished
+    GameView:
+      type: object
+      required:
+      - id
+      properties:
+        id:
+          type: string
+          description: Server-assigned game identifier
+          example: game-1
+        phase:
+          $ref: '#/components/schemas/GamePhase'
+        dealerSeat:
+          $ref: '#/components/schemas/Seat'
+        players:
+          type: array
+          minItems: 1
+          maxItems: 4
+          description: Joined participants ordered by seat, with unique seats and IDs
+          items:
+            $ref: '#/components/schemas/Player'
+        draw:
+          type: boolean
+          description: Both teams qualified after the latest completed deal; continue playing while true
+          example: false
+        currentDeal:
+          $ref: '#/components/schemas/Deal'
+        winnerTeam:
+          $ref: '#/components/schemas/Team'
+      description: Selected public fields. id is always included. An omitted fields parameter returns
+        every public section; optional currentDeal and winnerTeam remain absent when inapplicable.
+    GameReadResponse:
+      type: object
+      required:
+      - game
+      - nodeId
+      properties:
+        game:
+          $ref: '#/components/schemas/GameView'
+        nodeId:
+          type: string
+    BidActionBody:
+      type: object
+      additionalProperties: false
+      required:
+      - playerId
+      - dealNumber
+      - amount
+      properties:
+        playerId:
+          type: string
+          minLength: 1
+        dealNumber:
+          type: integer
+          format: int64
+          minimum: 1
+        amount:
+          $ref: '#/components/schemas/BidAmount'
+    PlayActionBody:
+      type: object
+      additionalProperties: false
+      required:
+      - playerId
+      - dealNumber
+      - card
+      properties:
+        playerId:
+          type: string
+          minLength: 1
+        dealNumber:
+          type: integer
+          format: int64
+          minimum: 1
+        card:
+          $ref: '#/components/schemas/Card'
+    ActionBody:
+      type: object
+      additionalProperties: false
+      required:
+      - gameId
+      minProperties: 2
+      maxProperties: 2
+      description: gameId and exactly one of join, startDeal, bid, play.
+      properties:
+        gameId:
+          type: string
+          minLength: 1
+        join:
+          $ref: '#/components/schemas/JoinGameBody'
+        startDeal:
+          $ref: '#/components/schemas/StartDealBody'
+        bid:
+          $ref: '#/components/schemas/BidActionBody'
+        play:
+          $ref: '#/components/schemas/PlayActionBody'
+    BatchBody:
+      type: object
+      additionalProperties: false
+      required:
+      - actions
+      properties:
+        actions:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ActionBody'
+    BatchResponse:
+      type: object
+      required:
+      - games
+      - nodeId
+      properties:
+        games:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Game'
+          description: Snapshot immediately after each action, in action order. Later actions see earlier
+            changes. All changes commit together.
+        nodeId:
+          type: string

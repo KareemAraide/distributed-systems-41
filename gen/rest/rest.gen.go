@@ -106,29 +106,10 @@ func (e BidAmount) Valid() bool {
 	}
 }
 
-// Defines values for Consistency.
-const (
-	Linearizable Consistency = "linearizable"
-	Sequential   Consistency = "sequential"
-)
-
-// Valid indicates whether the value is a known member of the Consistency enum.
-func (e Consistency) Valid() bool {
-	switch e {
-	case Linearizable:
-		return true
-	case Sequential:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for DealStatus.
 const (
 	DealStatusBidding   DealStatus = "bidding"
 	DealStatusCompleted DealStatus = "completed"
-	DealStatusCutting   DealStatus = "cutting"
 	DealStatusPlaying   DealStatus = "playing"
 	DealStatusSkipped   DealStatus = "skipped"
 )
@@ -139,8 +120,6 @@ func (e DealStatus) Valid() bool {
 	case DealStatusBidding:
 		return true
 	case DealStatusCompleted:
-		return true
-	case DealStatusCutting:
 		return true
 	case DealStatusPlaying:
 		return true
@@ -154,7 +133,6 @@ func (e DealStatus) Valid() bool {
 // Defines values for GamePhase.
 const (
 	GamePhaseBidding  GamePhase = "bidding"
-	GamePhaseCutting  GamePhase = "cutting"
 	GamePhaseFinished GamePhase = "finished"
 	GamePhasePlaying  GamePhase = "playing"
 	GamePhaseReady    GamePhase = "ready"
@@ -165,8 +143,6 @@ const (
 func (e GamePhase) Valid() bool {
 	switch e {
 	case GamePhaseBidding:
-		return true
-	case GamePhaseCutting:
 		return true
 	case GamePhaseFinished:
 		return true
@@ -223,6 +199,27 @@ func (e Team) Valid() bool {
 	}
 }
 
+// ActionBody gameId and exactly one of join, startDeal, bid, play.
+type ActionBody struct {
+	Bid       *BidActionBody  `json:"bid,omitempty"`
+	GameId    string          `json:"gameId"`
+	Join      *JoinGameBody   `json:"join,omitempty"`
+	Play      *PlayActionBody `json:"play,omitempty"`
+	StartDeal *StartDealBody  `json:"startDeal,omitempty"`
+}
+
+// BatchBody defines model for BatchBody.
+type BatchBody struct {
+	Actions []ActionBody `json:"actions"`
+}
+
+// BatchResponse defines model for BatchResponse.
+type BatchResponse struct {
+	// Games Snapshot immediately after each action, in action order. Later actions see earlier changes. All changes commit together.
+	Games  []Game `json:"games"`
+	NodeId string `json:"nodeId"`
+}
+
 // Bid defines model for Bid.
 type Bid struct {
 	// Amount Bid in tricks; the player's current score may impose a higher minimum
@@ -235,6 +232,14 @@ type Bid struct {
 
 // BidPoints Amount for bids 2-5, twice the amount for bids 7-13; added on success or subtracted on failure
 type BidPoints int32
+
+// BidActionBody defines model for BidActionBody.
+type BidActionBody struct {
+	// Amount Bid in tricks; the player's current score may impose a higher minimum
+	Amount     BidAmount `json:"amount"`
+	DealNumber int64     `json:"dealNumber"`
+	PlayerId   string    `json:"playerId"`
+}
 
 // BidAmount Bid in tricks; the player's current score may impose a higher minimum
 type BidAmount int32
@@ -253,9 +258,6 @@ type CardPlay struct {
 	PlayerId string `json:"playerId"`
 }
 
-// Consistency defines model for Consistency.
-type Consistency string
-
 // CreateGameBody defines model for CreateGameBody.
 type CreateGameBody struct {
 	// Name Display name of the creator, who occupies seat 0
@@ -264,24 +266,7 @@ type CreateGameBody struct {
 	Name string `json:"name"`
 }
 
-// CutDeckBody defines model for CutDeckBody.
-type CutDeckBody struct {
-	// CutPosition Number of cards moved from the top to the bottom, including the selected card
-	//
-	// Example: 20
-	CutPosition int32 `json:"cutPosition"`
-
-	// PlayerId Acting participant; must sit immediately left of the dealer
-	//
-	// Example: player-3
-	PlayerId string `json:"playerId"`
-}
-
-// Deal Public deal state. nextSeat identifies the cutting, bidding, or playing
-// participant and is absent for skipped/completed deals. currentTrick
-// exists only during play and has 0-3 plays. lastTrick is the most recent
-// resolved trick, with 4 plays and winnerSeat. It is retained after deal
-// completion; no currentTrick remains then.
+// Deal Current or most recent deal. nextSeat is absent after a skipped/completed deal. A resolved lastTrick is retained. Starting another deal requires the next dealer's request.
 type Deal struct {
 	// Bids Public bids in submission order, beginning with the dealer
 	Bids            []Bid `json:"bids"`
@@ -289,9 +274,6 @@ type Deal struct {
 
 	// CurrentTrick winnerSeat is present only for a resolved trick with exactly four plays
 	CurrentTrick *Trick `json:"currentTrick,omitempty"`
-
-	// CutPosition Present after the cut; absent while awaiting it
-	CutPosition *int32 `json:"cutPosition,omitempty"`
 
 	// DealerSeat Seats increase to the right; opposite seats differ by 2
 	DealerSeat Seat `json:"dealerSeat"`
@@ -303,7 +285,7 @@ type Deal struct {
 	NextSeat *Seat `json:"nextSeat,omitempty"`
 	Number   int64 `json:"number"`
 
-	// PlayerStates One entry per seat in seat order; card counts are 0 before the cut
+	// PlayerStates One entry per seat in seat order
 	PlayerStates []DealPlayerState `json:"playerStates"`
 	Status       DealStatus        `json:"status"`
 }
@@ -324,11 +306,7 @@ type DealPlayerState struct {
 // dealer during a deal and the next dealer in phase ready.
 // A phase-finished game accepts no more state-changing operations.
 type Game struct {
-	// CurrentDeal Public deal state. nextSeat identifies the cutting, bidding, or playing
-	// participant and is absent for skipped/completed deals. currentTrick
-	// exists only during play and has 0-3 plays. lastTrick is the most recent
-	// resolved trick, with 4 plays and winnerSeat. It is retained after deal
-	// completion; no currentTrick remains then.
+	// CurrentDeal Current or most recent deal. nextSeat is absent after a skipped/completed deal. A resolved lastTrick is retained. Starting another deal requires the next dealer's request.
 	CurrentDeal *Deal `json:"currentDeal,omitempty"`
 
 	// DealerSeat Seats increase to the right; opposite seats differ by 2
@@ -342,9 +320,7 @@ type Game struct {
 	// Id Server-assigned game identifier
 	//
 	// Example: game-1
-	Id string `json:"id"`
-
-	// Phase Waiting for players, ready for a deal, active deal phase, or a finished game
+	Id    string    `json:"id"`
 	Phase GamePhase `json:"phase"`
 
 	// Players Joined participants ordered by seat, with unique seats and IDs
@@ -354,8 +330,15 @@ type Game struct {
 	WinnerTeam *Team `json:"winnerTeam,omitempty"`
 }
 
-// GamePhase Waiting for players, ready for a deal, active deal phase, or a finished game
+// GamePhase defines model for GamePhase.
 type GamePhase string
+
+// GameReadResponse defines model for GameReadResponse.
+type GameReadResponse struct {
+	// Game Selected public fields. id is always included. An omitted fields parameter returns every public section; optional currentDeal and winnerTeam remain absent when inapplicable.
+	Game   GameView `json:"game"`
+	NodeId string   `json:"nodeId"`
+}
 
 // GameResponse defines model for GameResponse.
 type GameResponse struct {
@@ -372,10 +355,36 @@ type GameResponse struct {
 	NodeId string `json:"nodeId"`
 }
 
+// GameView Selected public fields. id is always included. An omitted fields parameter returns every public section; optional currentDeal and winnerTeam remain absent when inapplicable.
+type GameView struct {
+	// CurrentDeal Current or most recent deal. nextSeat is absent after a skipped/completed deal. A resolved lastTrick is retained. Starting another deal requires the next dealer's request.
+	CurrentDeal *Deal `json:"currentDeal,omitempty"`
+
+	// DealerSeat Seats increase to the right; opposite seats differ by 2
+	DealerSeat *Seat `json:"dealerSeat,omitempty"`
+
+	// Draw Both teams qualified after the latest completed deal; continue playing while true
+	//
+	// Example: false
+	Draw *bool `json:"draw,omitempty"`
+
+	// Id Server-assigned game identifier
+	//
+	// Example: game-1
+	Id    string     `json:"id"`
+	Phase *GamePhase `json:"phase,omitempty"`
+
+	// Players Joined participants ordered by seat, with unique seats and IDs
+	Players *[]Player `json:"players,omitempty"`
+
+	// WinnerTeam Team 0 has seats 0 and 2; team 1 has seats 1 and 3
+	WinnerTeam *Team `json:"winnerTeam,omitempty"`
+}
+
 // GamesResponse defines model for GamesResponse.
 type GamesResponse struct {
 	// Games Public game snapshots in the same order as the requested IDs
-	Games []Game `json:"games"`
+	Games []GameView `json:"games"`
 
 	// NodeId Identity of the gRPC node that produced every snapshot in this batch
 	//
@@ -425,6 +434,16 @@ type PlaceBidBody struct {
 	PlayerId string `json:"playerId"`
 }
 
+// PlayActionBody defines model for PlayActionBody.
+type PlayActionBody struct {
+	// Card Rank followed by suit; hearts are always trump; no jokers
+	//
+	// Example: 10H
+	Card       Card   `json:"card"`
+	DealNumber int64  `json:"dealNumber"`
+	PlayerId   string `json:"playerId"`
+}
+
 // PlayCardBody defines model for PlayCardBody.
 type PlayCardBody struct {
 	// Card Rank followed by suit; hearts are always trump; no jokers
@@ -440,7 +459,7 @@ type PlayCardBody struct {
 
 // Player defines model for Player.
 type Player struct {
-	// Id Example: player-0
+	// Id Example: player-1
 	Id string `json:"id"`
 
 	// MinimumBid Bid in tricks; the player's current score may impose a higher minimum
@@ -510,6 +529,9 @@ type Trick struct {
 // DealNumber defines model for DealNumber.
 type DealNumber = int64
 
+// Fields defines model for Fields.
+type Fields = string
+
 // GameId defines model for GameId.
 type GameId = string
 
@@ -519,50 +541,44 @@ type GameIds = []string
 // PlayerId defines model for PlayerId.
 type PlayerId = string
 
-// BadRequest defines model for BadRequest.
-type BadRequest = Problem
+// Error400 defines model for Error400.
+type Error400 = Problem
 
-// Conflict defines model for Conflict.
-type Conflict = Problem
+// Error404 defines model for Error404.
+type Error404 = Problem
 
-// FailedPrecondition defines model for FailedPrecondition.
-type FailedPrecondition = Problem
+// Error409 defines model for Error409.
+type Error409 = Problem
 
-// GatewayTimeout defines model for GatewayTimeout.
-type GatewayTimeout = Problem
+// Error412 defines model for Error412.
+type Error412 = Problem
 
-// InternalError defines model for InternalError.
-type InternalError = Problem
+// Error500 defines model for Error500.
+type Error500 = Problem
 
-// NotFound defines model for NotFound.
-type NotFound = Problem
+// Error503 defines model for Error503.
+type Error503 = Problem
 
-// NotImplemented defines model for NotImplemented.
-type NotImplemented = Problem
-
-// Unavailable defines model for Unavailable.
-type Unavailable = Problem
+// Error504 defines model for Error504.
+type Error504 = Problem
 
 // GetGamesParams defines parameters for GetGames.
 type GetGamesParams struct {
 	// Ids Nonempty, distinct game IDs, repeated in the desired result order
 	Ids GameIds `form:"ids" json:"ids"`
 
-	// Consistency Optional read consistency; Part I forwards it without enforcing guarantees
-	Consistency *Consistency `form:"consistency,omitempty" json:"consistency,omitempty"`
+	// Fields Comma-separated top-level public fields: id, phase, dealerSeat, players, draw, currentDeal, winnerTeam. Omit for all fields. id is always included. Empty or unknown paths return 400. Converted to google.protobuf.FieldMask.
+	Fields *Fields `form:"fields,omitempty" json:"fields,omitempty"`
 }
 
 // GetGameParams defines parameters for GetGame.
 type GetGameParams struct {
-	// Consistency Optional read consistency; Part I forwards it without enforcing guarantees
-	Consistency *Consistency `form:"consistency,omitempty" json:"consistency,omitempty"`
+	// Fields Comma-separated top-level public fields: id, phase, dealerSeat, players, draw, currentDeal, winnerTeam. Omit for all fields. id is always included. Empty or unknown paths return 400. Converted to google.protobuf.FieldMask.
+	Fields *Fields `form:"fields,omitempty" json:"fields,omitempty"`
 }
 
-// GetHandParams defines parameters for GetHand.
-type GetHandParams struct {
-	// Consistency Optional read consistency; Part I forwards it without enforcing guarantees
-	Consistency *Consistency `form:"consistency,omitempty" json:"consistency,omitempty"`
-}
+// ApplyBatchJSONRequestBody defines body for ApplyBatch for application/json ContentType.
+type ApplyBatchJSONRequestBody = BatchBody
 
 // CreateGameJSONRequestBody defines body for CreateGame for application/json ContentType.
 type CreateGameJSONRequestBody = CreateGameBody
@@ -573,9 +589,6 @@ type StartDealJSONRequestBody = StartDealBody
 // PlaceBidJSONRequestBody defines body for PlaceBid for application/json ContentType.
 type PlaceBidJSONRequestBody = PlaceBidBody
 
-// CutDeckJSONRequestBody defines body for CutDeck for application/json ContentType.
-type CutDeckJSONRequestBody = CutDeckBody
-
 // PlayCardJSONRequestBody defines body for PlayCard for application/json ContentType.
 type PlayCardJSONRequestBody = PlayCardBody
 
@@ -584,33 +597,33 @@ type JoinGameJSONRequestBody = JoinGameBody
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// GetGames Read several games in one batch
-	// (GET /v1/games)
+	// GetGames Read selected games atomically, in request order
+	// (GET /games)
 	GetGames(w http.ResponseWriter, r *http.Request, params GetGamesParams)
-	// CreateGame Create a game and seat its creator
-	// (POST /v1/games)
+	// ApplyBatch Apply 1-100 game actions atomically, in order
+	// (PATCH /games)
+	ApplyBatch(w http.ResponseWriter, r *http.Request)
+	// CreateGame Create a distinct game; creator sits at seat 0
+	// (POST /games)
 	CreateGame(w http.ResponseWriter, r *http.Request)
-	// GetGame Read public game state
-	// (GET /v1/games/{gameId})
+	// GetGame Read one game using the GetGames RPC
+	// (GET /games/{gameId})
 	GetGame(w http.ResponseWriter, r *http.Request, gameId GameId, params GetGameParams)
-	// StartDeal Start a deal with a server-generated random shuffle
-	// (POST /v1/games/{gameId}/deals)
+	// StartDeal Dealer starts a random deal, immediately ready for bidding
+	// (POST /games/{gameId}/deals)
 	StartDeal(w http.ResponseWriter, r *http.Request, gameId GameId)
-	// PlaceBid Submit the next player's fixed bid
-	// (POST /v1/games/{gameId}/deals/{dealNumber}/bids)
+	// PlaceBid Record a bid; resolve bidding after the fourth bid
+	// (POST /games/{gameId}/deals/{dealNumber}/bids)
 	PlaceBid(w http.ResponseWriter, r *http.Request, gameId GameId, dealNumber DealNumber)
-	// CutDeck Cut the shuffled deck and distribute the cards
-	// (POST /v1/games/{gameId}/deals/{dealNumber}/cuts)
-	CutDeck(w http.ResponseWriter, r *http.Request, gameId GameId, dealNumber DealNumber)
-	// PlayCard Play one card and atomically advance the game
-	// (POST /v1/games/{gameId}/deals/{dealNumber}/plays)
+	// PlayCard Play a legal card; resolve tricks and scoring automatically
+	// (POST /games/{gameId}/deals/{dealNumber}/plays)
 	PlayCard(w http.ResponseWriter, r *http.Request, gameId GameId, dealNumber DealNumber)
 	// JoinGame Join an empty seat before the first deal
-	// (POST /v1/games/{gameId}/players)
+	// (POST /games/{gameId}/players)
 	JoinGame(w http.ResponseWriter, r *http.Request, gameId GameId)
-	// GetHand Read a participant's remaining cards
-	// (GET /v1/games/{gameId}/players/{playerId}/hand)
-	GetHand(w http.ResponseWriter, r *http.Request, gameId GameId, playerId PlayerId, params GetHandParams)
+	// GetHand Read remaining cards from the current or most recent deal
+	// (GET /games/{gameId}/players/{playerId}/hand)
+	GetHand(w http.ResponseWriter, r *http.Request, gameId GameId, playerId PlayerId)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -644,21 +657,35 @@ func (siw *ServerInterfaceWrapper) GetGames(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// ------------- Optional query parameter "consistency" -------------
+	// ------------- Optional query parameter "fields" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "consistency", r.URL.Query(), &params.Consistency, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "fields", r.URL.Query(), &params.Fields, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "consistency"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "fields"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "consistency", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "fields", Err: err})
 		}
 		return
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetGames(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ApplyBatch operation middleware
+func (siw *ServerInterfaceWrapper) ApplyBatch(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ApplyBatch(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -700,15 +727,15 @@ func (siw *ServerInterfaceWrapper) GetGame(w http.ResponseWriter, r *http.Reques
 	// Parameter object where we will unmarshal all parameters from the context
 	var params GetGameParams
 
-	// ------------- Optional query parameter "consistency" -------------
+	// ------------- Optional query parameter "fields" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "consistency", r.URL.Query(), &params.Consistency, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "fields", r.URL.Query(), &params.Fields, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "consistency"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "fields"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "consistency", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "fields", Err: err})
 		}
 		return
 	}
@@ -776,41 +803,6 @@ func (siw *ServerInterfaceWrapper) PlaceBid(w http.ResponseWriter, r *http.Reque
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PlaceBid(w, r, gameId, dealNumber)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// CutDeck operation middleware
-func (siw *ServerInterfaceWrapper) CutDeck(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "gameId" -------------
-	var gameId GameId
-
-	err = runtime.BindStyledParameterWithOptions("simple", "gameId", r.PathValue("gameId"), &gameId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "gameId", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "dealNumber" -------------
-	var dealNumber DealNumber
-
-	err = runtime.BindStyledParameterWithOptions("simple", "dealNumber", r.PathValue("dealNumber"), &dealNumber, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dealNumber", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CutDeck(w, r, gameId, dealNumber)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -905,24 +897,8 @@ func (siw *ServerInterfaceWrapper) GetHand(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Parameter object where we will unmarshal all parameters from the context
-	var params GetHandParams
-
-	// ------------- Optional query parameter "consistency" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "consistency", r.URL.Query(), &params.Consistency, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "consistency"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "consistency", Err: err})
-		}
-		return
-	}
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetHand(w, r, gameId, playerId, params)
+		siw.Handler.GetHand(w, r, gameId, playerId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1052,34 +1028,32 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/games", wrapper.GetGames)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/games", wrapper.CreateGame)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/games/{gameId}", wrapper.GetGame)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/games/{gameId}/players", wrapper.JoinGame)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/games/{gameId}/deals", wrapper.StartDeal)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/games/{gameId}/deals/{dealNumber}/cuts", wrapper.CutDeck)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/games/{gameId}/deals/{dealNumber}/bids", wrapper.PlaceBid)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/games/{gameId}/deals/{dealNumber}/plays", wrapper.PlayCard)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/games/{gameId}/players/{playerId}/hand", wrapper.GetHand)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/games", wrapper.GetGames)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/games", wrapper.ApplyBatch)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/games", wrapper.CreateGame)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/games/{gameId}", wrapper.GetGame)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/games/{gameId}/players", wrapper.JoinGame)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/games/{gameId}/deals", wrapper.StartDeal)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/games/{gameId}/deals/{dealNumber}/bids", wrapper.PlaceBid)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/games/{gameId}/deals/{dealNumber}/plays", wrapper.PlayCard)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/games/{gameId}/players/{playerId}/hand", wrapper.GetHand)
 
 	return m
 }
 
-type BadRequestApplicationProblemPlusJSONResponse Problem
+type Error400ApplicationProblemPlusJSONResponse Problem
 
-type ConflictApplicationProblemPlusJSONResponse Problem
+type Error404ApplicationProblemPlusJSONResponse Problem
 
-type FailedPreconditionApplicationProblemPlusJSONResponse Problem
+type Error409ApplicationProblemPlusJSONResponse Problem
 
-type GatewayTimeoutApplicationProblemPlusJSONResponse Problem
+type Error412ApplicationProblemPlusJSONResponse Problem
 
-type InternalErrorApplicationProblemPlusJSONResponse Problem
+type Error500ApplicationProblemPlusJSONResponse Problem
 
-type NotFoundApplicationProblemPlusJSONResponse Problem
+type Error503ApplicationProblemPlusJSONResponse Problem
 
-type NotImplementedApplicationProblemPlusJSONResponse Problem
-
-type UnavailableApplicationProblemPlusJSONResponse Problem
+type Error504ApplicationProblemPlusJSONResponse Problem
 
 type GetGamesRequestObject struct {
 	Params GetGamesParams
@@ -1104,7 +1078,7 @@ func (response GetGames200JSONResponse) VisitGetGamesResponse(w http.ResponseWri
 }
 
 type GetGames400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
+	Error400ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGames400ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
@@ -1120,7 +1094,7 @@ func (response GetGames400ApplicationProblemPlusJSONResponse) VisitGetGamesRespo
 }
 
 type GetGames404ApplicationProblemPlusJSONResponse struct {
-	NotFoundApplicationProblemPlusJSONResponse
+	Error404ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGames404ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
@@ -1136,7 +1110,7 @@ func (response GetGames404ApplicationProblemPlusJSONResponse) VisitGetGamesRespo
 }
 
 type GetGames500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
+	Error500ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGames500ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
@@ -1151,24 +1125,8 @@ func (response GetGames500ApplicationProblemPlusJSONResponse) VisitGetGamesRespo
 	return err
 }
 
-type GetGames501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response GetGames501ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type GetGames503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
+	Error503ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGames503ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
@@ -1184,10 +1142,144 @@ func (response GetGames503ApplicationProblemPlusJSONResponse) VisitGetGamesRespo
 }
 
 type GetGames504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
+	Error504ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGames504ApplicationProblemPlusJSONResponse) VisitGetGamesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(504)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyBatchRequestObject struct {
+	Body *ApplyBatchJSONRequestBody
+}
+
+type ApplyBatchResponseObject interface {
+	VisitApplyBatchResponse(w http.ResponseWriter) error
+}
+
+type ApplyBatch200JSONResponse BatchResponse
+
+func (response ApplyBatch200JSONResponse) VisitApplyBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyBatch400ApplicationProblemPlusJSONResponse struct {
+	Error400ApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyBatch400ApplicationProblemPlusJSONResponse) VisitApplyBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyBatch404ApplicationProblemPlusJSONResponse struct {
+	Error404ApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyBatch404ApplicationProblemPlusJSONResponse) VisitApplyBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyBatch409ApplicationProblemPlusJSONResponse struct {
+	Error409ApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyBatch409ApplicationProblemPlusJSONResponse) VisitApplyBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyBatch412ApplicationProblemPlusJSONResponse struct {
+	Error412ApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyBatch412ApplicationProblemPlusJSONResponse) VisitApplyBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(412)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyBatch500ApplicationProblemPlusJSONResponse struct {
+	Error500ApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyBatch500ApplicationProblemPlusJSONResponse) VisitApplyBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyBatch503ApplicationProblemPlusJSONResponse struct {
+	Error503ApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyBatch503ApplicationProblemPlusJSONResponse) VisitApplyBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApplyBatch504ApplicationProblemPlusJSONResponse struct {
+	Error504ApplicationProblemPlusJSONResponse
+}
+
+func (response ApplyBatch504ApplicationProblemPlusJSONResponse) VisitApplyBatchResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -1222,7 +1314,7 @@ func (response CreateGame201JSONResponse) VisitCreateGameResponse(w http.Respons
 }
 
 type CreateGame400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
+	Error400ApplicationProblemPlusJSONResponse
 }
 
 func (response CreateGame400ApplicationProblemPlusJSONResponse) VisitCreateGameResponse(w http.ResponseWriter) error {
@@ -1238,7 +1330,7 @@ func (response CreateGame400ApplicationProblemPlusJSONResponse) VisitCreateGameR
 }
 
 type CreateGame500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
+	Error500ApplicationProblemPlusJSONResponse
 }
 
 func (response CreateGame500ApplicationProblemPlusJSONResponse) VisitCreateGameResponse(w http.ResponseWriter) error {
@@ -1253,24 +1345,8 @@ func (response CreateGame500ApplicationProblemPlusJSONResponse) VisitCreateGameR
 	return err
 }
 
-type CreateGame501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response CreateGame501ApplicationProblemPlusJSONResponse) VisitCreateGameResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type CreateGame503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
+	Error503ApplicationProblemPlusJSONResponse
 }
 
 func (response CreateGame503ApplicationProblemPlusJSONResponse) VisitCreateGameResponse(w http.ResponseWriter) error {
@@ -1286,7 +1362,7 @@ func (response CreateGame503ApplicationProblemPlusJSONResponse) VisitCreateGameR
 }
 
 type CreateGame504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
+	Error504ApplicationProblemPlusJSONResponse
 }
 
 func (response CreateGame504ApplicationProblemPlusJSONResponse) VisitCreateGameResponse(w http.ResponseWriter) error {
@@ -1310,7 +1386,7 @@ type GetGameResponseObject interface {
 	VisitGetGameResponse(w http.ResponseWriter) error
 }
 
-type GetGame200JSONResponse GameResponse
+type GetGame200JSONResponse GameReadResponse
 
 func (response GetGame200JSONResponse) VisitGetGameResponse(w http.ResponseWriter) error {
 
@@ -1325,7 +1401,7 @@ func (response GetGame200JSONResponse) VisitGetGameResponse(w http.ResponseWrite
 }
 
 type GetGame400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
+	Error400ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGame400ApplicationProblemPlusJSONResponse) VisitGetGameResponse(w http.ResponseWriter) error {
@@ -1341,7 +1417,7 @@ func (response GetGame400ApplicationProblemPlusJSONResponse) VisitGetGameRespons
 }
 
 type GetGame404ApplicationProblemPlusJSONResponse struct {
-	NotFoundApplicationProblemPlusJSONResponse
+	Error404ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGame404ApplicationProblemPlusJSONResponse) VisitGetGameResponse(w http.ResponseWriter) error {
@@ -1357,7 +1433,7 @@ func (response GetGame404ApplicationProblemPlusJSONResponse) VisitGetGameRespons
 }
 
 type GetGame500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
+	Error500ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGame500ApplicationProblemPlusJSONResponse) VisitGetGameResponse(w http.ResponseWriter) error {
@@ -1372,24 +1448,8 @@ func (response GetGame500ApplicationProblemPlusJSONResponse) VisitGetGameRespons
 	return err
 }
 
-type GetGame501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response GetGame501ApplicationProblemPlusJSONResponse) VisitGetGameResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type GetGame503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
+	Error503ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGame503ApplicationProblemPlusJSONResponse) VisitGetGameResponse(w http.ResponseWriter) error {
@@ -1405,7 +1465,7 @@ func (response GetGame503ApplicationProblemPlusJSONResponse) VisitGetGameRespons
 }
 
 type GetGame504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
+	Error504ApplicationProblemPlusJSONResponse
 }
 
 func (response GetGame504ApplicationProblemPlusJSONResponse) VisitGetGameResponse(w http.ResponseWriter) error {
@@ -1444,7 +1504,7 @@ func (response StartDeal201JSONResponse) VisitStartDealResponse(w http.ResponseW
 }
 
 type StartDeal400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
+	Error400ApplicationProblemPlusJSONResponse
 }
 
 func (response StartDeal400ApplicationProblemPlusJSONResponse) VisitStartDealResponse(w http.ResponseWriter) error {
@@ -1460,7 +1520,7 @@ func (response StartDeal400ApplicationProblemPlusJSONResponse) VisitStartDealRes
 }
 
 type StartDeal404ApplicationProblemPlusJSONResponse struct {
-	NotFoundApplicationProblemPlusJSONResponse
+	Error404ApplicationProblemPlusJSONResponse
 }
 
 func (response StartDeal404ApplicationProblemPlusJSONResponse) VisitStartDealResponse(w http.ResponseWriter) error {
@@ -1476,7 +1536,7 @@ func (response StartDeal404ApplicationProblemPlusJSONResponse) VisitStartDealRes
 }
 
 type StartDeal412ApplicationProblemPlusJSONResponse struct {
-	FailedPreconditionApplicationProblemPlusJSONResponse
+	Error412ApplicationProblemPlusJSONResponse
 }
 
 func (response StartDeal412ApplicationProblemPlusJSONResponse) VisitStartDealResponse(w http.ResponseWriter) error {
@@ -1492,7 +1552,7 @@ func (response StartDeal412ApplicationProblemPlusJSONResponse) VisitStartDealRes
 }
 
 type StartDeal500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
+	Error500ApplicationProblemPlusJSONResponse
 }
 
 func (response StartDeal500ApplicationProblemPlusJSONResponse) VisitStartDealResponse(w http.ResponseWriter) error {
@@ -1507,24 +1567,8 @@ func (response StartDeal500ApplicationProblemPlusJSONResponse) VisitStartDealRes
 	return err
 }
 
-type StartDeal501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response StartDeal501ApplicationProblemPlusJSONResponse) VisitStartDealResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type StartDeal503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
+	Error503ApplicationProblemPlusJSONResponse
 }
 
 func (response StartDeal503ApplicationProblemPlusJSONResponse) VisitStartDealResponse(w http.ResponseWriter) error {
@@ -1540,7 +1584,7 @@ func (response StartDeal503ApplicationProblemPlusJSONResponse) VisitStartDealRes
 }
 
 type StartDeal504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
+	Error504ApplicationProblemPlusJSONResponse
 }
 
 func (response StartDeal504ApplicationProblemPlusJSONResponse) VisitStartDealResponse(w http.ResponseWriter) error {
@@ -1580,7 +1624,7 @@ func (response PlaceBid201JSONResponse) VisitPlaceBidResponse(w http.ResponseWri
 }
 
 type PlaceBid400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
+	Error400ApplicationProblemPlusJSONResponse
 }
 
 func (response PlaceBid400ApplicationProblemPlusJSONResponse) VisitPlaceBidResponse(w http.ResponseWriter) error {
@@ -1596,7 +1640,7 @@ func (response PlaceBid400ApplicationProblemPlusJSONResponse) VisitPlaceBidRespo
 }
 
 type PlaceBid404ApplicationProblemPlusJSONResponse struct {
-	NotFoundApplicationProblemPlusJSONResponse
+	Error404ApplicationProblemPlusJSONResponse
 }
 
 func (response PlaceBid404ApplicationProblemPlusJSONResponse) VisitPlaceBidResponse(w http.ResponseWriter) error {
@@ -1612,7 +1656,7 @@ func (response PlaceBid404ApplicationProblemPlusJSONResponse) VisitPlaceBidRespo
 }
 
 type PlaceBid412ApplicationProblemPlusJSONResponse struct {
-	FailedPreconditionApplicationProblemPlusJSONResponse
+	Error412ApplicationProblemPlusJSONResponse
 }
 
 func (response PlaceBid412ApplicationProblemPlusJSONResponse) VisitPlaceBidResponse(w http.ResponseWriter) error {
@@ -1628,7 +1672,7 @@ func (response PlaceBid412ApplicationProblemPlusJSONResponse) VisitPlaceBidRespo
 }
 
 type PlaceBid500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
+	Error500ApplicationProblemPlusJSONResponse
 }
 
 func (response PlaceBid500ApplicationProblemPlusJSONResponse) VisitPlaceBidResponse(w http.ResponseWriter) error {
@@ -1643,24 +1687,8 @@ func (response PlaceBid500ApplicationProblemPlusJSONResponse) VisitPlaceBidRespo
 	return err
 }
 
-type PlaceBid501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response PlaceBid501ApplicationProblemPlusJSONResponse) VisitPlaceBidResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type PlaceBid503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
+	Error503ApplicationProblemPlusJSONResponse
 }
 
 func (response PlaceBid503ApplicationProblemPlusJSONResponse) VisitPlaceBidResponse(w http.ResponseWriter) error {
@@ -1676,146 +1704,10 @@ func (response PlaceBid503ApplicationProblemPlusJSONResponse) VisitPlaceBidRespo
 }
 
 type PlaceBid504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
+	Error504ApplicationProblemPlusJSONResponse
 }
 
 func (response PlaceBid504ApplicationProblemPlusJSONResponse) VisitPlaceBidResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(504)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CutDeckRequestObject struct {
-	GameId     GameId     `json:"gameId"`
-	DealNumber DealNumber `json:"dealNumber"`
-	Body       *CutDeckJSONRequestBody
-}
-
-type CutDeckResponseObject interface {
-	VisitCutDeckResponse(w http.ResponseWriter) error
-}
-
-type CutDeck201JSONResponse GameResponse
-
-func (response CutDeck201JSONResponse) VisitCutDeckResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CutDeck400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
-}
-
-func (response CutDeck400ApplicationProblemPlusJSONResponse) VisitCutDeckResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(400)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CutDeck404ApplicationProblemPlusJSONResponse struct {
-	NotFoundApplicationProblemPlusJSONResponse
-}
-
-func (response CutDeck404ApplicationProblemPlusJSONResponse) VisitCutDeckResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(404)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CutDeck412ApplicationProblemPlusJSONResponse struct {
-	FailedPreconditionApplicationProblemPlusJSONResponse
-}
-
-func (response CutDeck412ApplicationProblemPlusJSONResponse) VisitCutDeckResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(412)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CutDeck500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
-}
-
-func (response CutDeck500ApplicationProblemPlusJSONResponse) VisitCutDeckResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(500)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CutDeck501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response CutDeck501ApplicationProblemPlusJSONResponse) VisitCutDeckResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CutDeck503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
-}
-
-func (response CutDeck503ApplicationProblemPlusJSONResponse) VisitCutDeckResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(503)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
-type CutDeck504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
-}
-
-func (response CutDeck504ApplicationProblemPlusJSONResponse) VisitCutDeckResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -1852,7 +1744,7 @@ func (response PlayCard201JSONResponse) VisitPlayCardResponse(w http.ResponseWri
 }
 
 type PlayCard400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
+	Error400ApplicationProblemPlusJSONResponse
 }
 
 func (response PlayCard400ApplicationProblemPlusJSONResponse) VisitPlayCardResponse(w http.ResponseWriter) error {
@@ -1868,7 +1760,7 @@ func (response PlayCard400ApplicationProblemPlusJSONResponse) VisitPlayCardRespo
 }
 
 type PlayCard404ApplicationProblemPlusJSONResponse struct {
-	NotFoundApplicationProblemPlusJSONResponse
+	Error404ApplicationProblemPlusJSONResponse
 }
 
 func (response PlayCard404ApplicationProblemPlusJSONResponse) VisitPlayCardResponse(w http.ResponseWriter) error {
@@ -1884,7 +1776,7 @@ func (response PlayCard404ApplicationProblemPlusJSONResponse) VisitPlayCardRespo
 }
 
 type PlayCard412ApplicationProblemPlusJSONResponse struct {
-	FailedPreconditionApplicationProblemPlusJSONResponse
+	Error412ApplicationProblemPlusJSONResponse
 }
 
 func (response PlayCard412ApplicationProblemPlusJSONResponse) VisitPlayCardResponse(w http.ResponseWriter) error {
@@ -1900,7 +1792,7 @@ func (response PlayCard412ApplicationProblemPlusJSONResponse) VisitPlayCardRespo
 }
 
 type PlayCard500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
+	Error500ApplicationProblemPlusJSONResponse
 }
 
 func (response PlayCard500ApplicationProblemPlusJSONResponse) VisitPlayCardResponse(w http.ResponseWriter) error {
@@ -1915,24 +1807,8 @@ func (response PlayCard500ApplicationProblemPlusJSONResponse) VisitPlayCardRespo
 	return err
 }
 
-type PlayCard501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response PlayCard501ApplicationProblemPlusJSONResponse) VisitPlayCardResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type PlayCard503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
+	Error503ApplicationProblemPlusJSONResponse
 }
 
 func (response PlayCard503ApplicationProblemPlusJSONResponse) VisitPlayCardResponse(w http.ResponseWriter) error {
@@ -1948,7 +1824,7 @@ func (response PlayCard503ApplicationProblemPlusJSONResponse) VisitPlayCardRespo
 }
 
 type PlayCard504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
+	Error504ApplicationProblemPlusJSONResponse
 }
 
 func (response PlayCard504ApplicationProblemPlusJSONResponse) VisitPlayCardResponse(w http.ResponseWriter) error {
@@ -1987,7 +1863,7 @@ func (response JoinGame201JSONResponse) VisitJoinGameResponse(w http.ResponseWri
 }
 
 type JoinGame400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
+	Error400ApplicationProblemPlusJSONResponse
 }
 
 func (response JoinGame400ApplicationProblemPlusJSONResponse) VisitJoinGameResponse(w http.ResponseWriter) error {
@@ -2003,7 +1879,7 @@ func (response JoinGame400ApplicationProblemPlusJSONResponse) VisitJoinGameRespo
 }
 
 type JoinGame404ApplicationProblemPlusJSONResponse struct {
-	NotFoundApplicationProblemPlusJSONResponse
+	Error404ApplicationProblemPlusJSONResponse
 }
 
 func (response JoinGame404ApplicationProblemPlusJSONResponse) VisitJoinGameResponse(w http.ResponseWriter) error {
@@ -2019,7 +1895,7 @@ func (response JoinGame404ApplicationProblemPlusJSONResponse) VisitJoinGameRespo
 }
 
 type JoinGame409ApplicationProblemPlusJSONResponse struct {
-	ConflictApplicationProblemPlusJSONResponse
+	Error409ApplicationProblemPlusJSONResponse
 }
 
 func (response JoinGame409ApplicationProblemPlusJSONResponse) VisitJoinGameResponse(w http.ResponseWriter) error {
@@ -2035,7 +1911,7 @@ func (response JoinGame409ApplicationProblemPlusJSONResponse) VisitJoinGameRespo
 }
 
 type JoinGame412ApplicationProblemPlusJSONResponse struct {
-	FailedPreconditionApplicationProblemPlusJSONResponse
+	Error412ApplicationProblemPlusJSONResponse
 }
 
 func (response JoinGame412ApplicationProblemPlusJSONResponse) VisitJoinGameResponse(w http.ResponseWriter) error {
@@ -2051,7 +1927,7 @@ func (response JoinGame412ApplicationProblemPlusJSONResponse) VisitJoinGameRespo
 }
 
 type JoinGame500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
+	Error500ApplicationProblemPlusJSONResponse
 }
 
 func (response JoinGame500ApplicationProblemPlusJSONResponse) VisitJoinGameResponse(w http.ResponseWriter) error {
@@ -2066,24 +1942,8 @@ func (response JoinGame500ApplicationProblemPlusJSONResponse) VisitJoinGameRespo
 	return err
 }
 
-type JoinGame501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response JoinGame501ApplicationProblemPlusJSONResponse) VisitJoinGameResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type JoinGame503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
+	Error503ApplicationProblemPlusJSONResponse
 }
 
 func (response JoinGame503ApplicationProblemPlusJSONResponse) VisitJoinGameResponse(w http.ResponseWriter) error {
@@ -2099,7 +1959,7 @@ func (response JoinGame503ApplicationProblemPlusJSONResponse) VisitJoinGameRespo
 }
 
 type JoinGame504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
+	Error504ApplicationProblemPlusJSONResponse
 }
 
 func (response JoinGame504ApplicationProblemPlusJSONResponse) VisitJoinGameResponse(w http.ResponseWriter) error {
@@ -2117,7 +1977,6 @@ func (response JoinGame504ApplicationProblemPlusJSONResponse) VisitJoinGameRespo
 type GetHandRequestObject struct {
 	GameId   GameId   `json:"gameId"`
 	PlayerId PlayerId `json:"playerId"`
-	Params   GetHandParams
 }
 
 type GetHandResponseObject interface {
@@ -2139,7 +1998,7 @@ func (response GetHand200JSONResponse) VisitGetHandResponse(w http.ResponseWrite
 }
 
 type GetHand400ApplicationProblemPlusJSONResponse struct {
-	BadRequestApplicationProblemPlusJSONResponse
+	Error400ApplicationProblemPlusJSONResponse
 }
 
 func (response GetHand400ApplicationProblemPlusJSONResponse) VisitGetHandResponse(w http.ResponseWriter) error {
@@ -2155,7 +2014,7 @@ func (response GetHand400ApplicationProblemPlusJSONResponse) VisitGetHandRespons
 }
 
 type GetHand404ApplicationProblemPlusJSONResponse struct {
-	NotFoundApplicationProblemPlusJSONResponse
+	Error404ApplicationProblemPlusJSONResponse
 }
 
 func (response GetHand404ApplicationProblemPlusJSONResponse) VisitGetHandResponse(w http.ResponseWriter) error {
@@ -2171,7 +2030,7 @@ func (response GetHand404ApplicationProblemPlusJSONResponse) VisitGetHandRespons
 }
 
 type GetHand412ApplicationProblemPlusJSONResponse struct {
-	FailedPreconditionApplicationProblemPlusJSONResponse
+	Error412ApplicationProblemPlusJSONResponse
 }
 
 func (response GetHand412ApplicationProblemPlusJSONResponse) VisitGetHandResponse(w http.ResponseWriter) error {
@@ -2187,7 +2046,7 @@ func (response GetHand412ApplicationProblemPlusJSONResponse) VisitGetHandRespons
 }
 
 type GetHand500ApplicationProblemPlusJSONResponse struct {
-	InternalErrorApplicationProblemPlusJSONResponse
+	Error500ApplicationProblemPlusJSONResponse
 }
 
 func (response GetHand500ApplicationProblemPlusJSONResponse) VisitGetHandResponse(w http.ResponseWriter) error {
@@ -2202,24 +2061,8 @@ func (response GetHand500ApplicationProblemPlusJSONResponse) VisitGetHandRespons
 	return err
 }
 
-type GetHand501ApplicationProblemPlusJSONResponse struct {
-	NotImplementedApplicationProblemPlusJSONResponse
-}
-
-func (response GetHand501ApplicationProblemPlusJSONResponse) VisitGetHandResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/problem+json")
-	w.WriteHeader(501)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 type GetHand503ApplicationProblemPlusJSONResponse struct {
-	UnavailableApplicationProblemPlusJSONResponse
+	Error503ApplicationProblemPlusJSONResponse
 }
 
 func (response GetHand503ApplicationProblemPlusJSONResponse) VisitGetHandResponse(w http.ResponseWriter) error {
@@ -2235,7 +2078,7 @@ func (response GetHand503ApplicationProblemPlusJSONResponse) VisitGetHandRespons
 }
 
 type GetHand504ApplicationProblemPlusJSONResponse struct {
-	GatewayTimeoutApplicationProblemPlusJSONResponse
+	Error504ApplicationProblemPlusJSONResponse
 }
 
 func (response GetHand504ApplicationProblemPlusJSONResponse) VisitGetHandResponse(w http.ResponseWriter) error {
@@ -2252,32 +2095,32 @@ func (response GetHand504ApplicationProblemPlusJSONResponse) VisitGetHandRespons
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
-	// GetGames Read several games in one batch
-	// (GET /v1/games)
+	// GetGames Read selected games atomically, in request order
+	// (GET /games)
 	GetGames(ctx context.Context, request GetGamesRequestObject) (GetGamesResponseObject, error)
-	// CreateGame Create a game and seat its creator
-	// (POST /v1/games)
+	// ApplyBatch Apply 1-100 game actions atomically, in order
+	// (PATCH /games)
+	ApplyBatch(ctx context.Context, request ApplyBatchRequestObject) (ApplyBatchResponseObject, error)
+	// CreateGame Create a distinct game; creator sits at seat 0
+	// (POST /games)
 	CreateGame(ctx context.Context, request CreateGameRequestObject) (CreateGameResponseObject, error)
-	// GetGame Read public game state
-	// (GET /v1/games/{gameId})
+	// GetGame Read one game using the GetGames RPC
+	// (GET /games/{gameId})
 	GetGame(ctx context.Context, request GetGameRequestObject) (GetGameResponseObject, error)
-	// StartDeal Start a deal with a server-generated random shuffle
-	// (POST /v1/games/{gameId}/deals)
+	// StartDeal Dealer starts a random deal, immediately ready for bidding
+	// (POST /games/{gameId}/deals)
 	StartDeal(ctx context.Context, request StartDealRequestObject) (StartDealResponseObject, error)
-	// PlaceBid Submit the next player's fixed bid
-	// (POST /v1/games/{gameId}/deals/{dealNumber}/bids)
+	// PlaceBid Record a bid; resolve bidding after the fourth bid
+	// (POST /games/{gameId}/deals/{dealNumber}/bids)
 	PlaceBid(ctx context.Context, request PlaceBidRequestObject) (PlaceBidResponseObject, error)
-	// CutDeck Cut the shuffled deck and distribute the cards
-	// (POST /v1/games/{gameId}/deals/{dealNumber}/cuts)
-	CutDeck(ctx context.Context, request CutDeckRequestObject) (CutDeckResponseObject, error)
-	// PlayCard Play one card and atomically advance the game
-	// (POST /v1/games/{gameId}/deals/{dealNumber}/plays)
+	// PlayCard Play a legal card; resolve tricks and scoring automatically
+	// (POST /games/{gameId}/deals/{dealNumber}/plays)
 	PlayCard(ctx context.Context, request PlayCardRequestObject) (PlayCardResponseObject, error)
 	// JoinGame Join an empty seat before the first deal
-	// (POST /v1/games/{gameId}/players)
+	// (POST /games/{gameId}/players)
 	JoinGame(ctx context.Context, request JoinGameRequestObject) (JoinGameResponseObject, error)
-	// GetHand Read a participant's remaining cards
-	// (GET /v1/games/{gameId}/players/{playerId}/hand)
+	// GetHand Read remaining cards from the current or most recent deal
+	// (GET /games/{gameId}/players/{playerId}/hand)
 	GetHand(ctx context.Context, request GetHandRequestObject) (GetHandResponseObject, error)
 }
 
@@ -2339,6 +2182,37 @@ func (sh *strictHandler) GetGames(w http.ResponseWriter, r *http.Request, params
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetGamesResponseObject); ok {
 		if err := validResponse.VisitGetGamesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ApplyBatch operation middleware
+func (sh *strictHandler) ApplyBatch(w http.ResponseWriter, r *http.Request) {
+	var request ApplyBatchRequestObject
+
+	var body ApplyBatchJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ApplyBatch(ctx, request.(ApplyBatchRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ApplyBatch")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ApplyBatchResponseObject); ok {
+		if err := validResponse.VisitApplyBatchResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -2471,40 +2345,6 @@ func (sh *strictHandler) PlaceBid(w http.ResponseWriter, r *http.Request, gameId
 	}
 }
 
-// CutDeck operation middleware
-func (sh *strictHandler) CutDeck(w http.ResponseWriter, r *http.Request, gameId GameId, dealNumber DealNumber) {
-	var request CutDeckRequestObject
-
-	request.GameId = gameId
-	request.DealNumber = dealNumber
-
-	var body CutDeckJSONRequestBody
-	if err := runtime.BindJSONBody(r, &body); err != nil {
-		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
-		return
-	}
-	request.Body = &body
-
-	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.CutDeck(ctx, request.(CutDeckRequestObject))
-	}
-	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "CutDeck")
-	}
-
-	response, err := handler(r.Context(), w, r, request)
-
-	if err != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(CutDeckResponseObject); ok {
-		if err := validResponse.VisitCutDeckResponse(w); err != nil {
-			sh.options.ResponseErrorHandlerFunc(w, r, err)
-		}
-	} else if response != nil {
-		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
-	}
-}
-
 // PlayCard operation middleware
 func (sh *strictHandler) PlayCard(w http.ResponseWriter, r *http.Request, gameId GameId, dealNumber DealNumber) {
 	var request PlayCardRequestObject
@@ -2573,12 +2413,11 @@ func (sh *strictHandler) JoinGame(w http.ResponseWriter, r *http.Request, gameId
 }
 
 // GetHand operation middleware
-func (sh *strictHandler) GetHand(w http.ResponseWriter, r *http.Request, gameId GameId, playerId PlayerId, params GetHandParams) {
+func (sh *strictHandler) GetHand(w http.ResponseWriter, r *http.Request, gameId GameId, playerId PlayerId) {
 	var request GetHandRequestObject
 
 	request.GameId = gameId
 	request.PlayerId = playerId
-	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.GetHand(ctx, request.(GetHandRequestObject))

@@ -1,0 +1,13 @@
+game_sequence: 1
+player_sequence: 4
+games { key: "game-1" value {
+ id: "game-1"
+ phase: GAME_PHASE_BIDDING
+ participants { id: "player-1" name: "Kareem" seat: 0 hand: "5C" hand: "9C" hand: "KC" hand: "4D" hand: "8D" hand: "QD" hand: "3S" hand: "7S" hand: "JS" hand: "2H" hand: "6H" hand: "10H" hand: "AH" }
+ participants { id: "player-2" name: "Awes" seat: 1 hand: "2C" hand: "6C" hand: "10C" hand: "AC" hand: "5D" hand: "9D" hand: "KD" hand: "4S" hand: "8S" hand: "QS" hand: "3H" hand: "7H" hand: "JH" }
+ participants { id: "player-3" name: "Dana" seat: 2 hand: "3C" hand: "7C" hand: "JC" hand: "2D" hand: "6D" hand: "10D" hand: "AD" hand: "5S" hand: "9S" hand: "KS" hand: "4H" hand: "8H" hand: "QH" }
+ participants { id: "player-4" name: "Sami" seat: 3 hand: "4C" hand: "8C" hand: "QC" hand: "3D" hand: "7D" hand: "JD" hand: "2S" hand: "6S" hand: "10S" hand: "AS" hand: "5H" hand: "9H" hand: "KH" }
+ deal { number: 1 status: DEAL_STATUS_BIDDING next_seat: 0
+ tricks_won: 0 tricks_won: 0 tricks_won: 0 tricks_won: 0
+ }
+} }

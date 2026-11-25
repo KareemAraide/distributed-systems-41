@@ -1,5 +1,8 @@
 # Go build output
 /bin/
+/grades.cs/
+/study-guide/
+/report/build/
 # Generated code: commit it if you prefer, but always regenerate after editing the spec/.proto
 # Generated Go packages are checked in so Dependabot can resolve their imports.
 *.test
